@@ -26,7 +26,17 @@ import requests
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 
+try:  # load webapp/.env so secrets (e.g. ANTHROPIC_API_KEY) stay out of the repo
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+except Exception:
+    pass
+
 app = FastAPI(title="My OpenBB Dashboard")
+
+# Optional keys (read from webapp/.env or the environment; never hardcoded)
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")  # for AI-written advice
+FMP_CONFIGURED = None  # FMP key lives in OpenBB's user_settings.json, not here
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
