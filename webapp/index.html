@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>My OpenBB Dashboard</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack-all.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0d1117; --panel: #161b22; --panel-2: #1c2330; --border: #2a3441;
+      --text: #e6edf3; --muted: #8b949e; --accent: #2f81f7; --green: #3fb950; --red: #f85149;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+    .app-row { flex: 1; display: flex; overflow: hidden; min-height: 0; }
+    .ticker-tape { display: flex; align-items: center; height: 38px; background: #0b0f14; border-bottom: 1px solid var(--border); flex-shrink: 0; overflow: hidden; }
+    .ticker-tape.hidden { display: none; }
+    .tt-label { display: flex; align-items: center; gap: 7px; background: var(--red); color: #fff; font-weight: 700; font-size: 12px; letter-spacing: .06em; padding: 0 14px; height: 100%; white-space: nowrap; flex-shrink: 0; }
+    .tt-dot { width: 8px; height: 8px; border-radius: 50%; background: #fff; animation: blink 1.2s ease-in-out infinite; }
+    @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+    .tt-viewport { flex: 1; overflow: hidden; position: relative; height: 100%; display: flex; align-items: center; }
+    .tt-track { display: inline-flex; align-items: center; white-space: nowrap; will-change: transform; animation: ticker 160s linear infinite; }
+    .tt-viewport:hover .tt-track { animation-play-state: paused; }
+    @keyframes ticker { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+    .tt-item { color: var(--text); font-size: 13px; padding: 0 20px; text-decoration: none; }
+    .tt-item:hover { color: var(--accent); }
+    .tt-item .src { color: var(--accent); font-size: 11px; font-weight: 600; margin-right: 7px; }
+    .tt-sep { color: var(--red); font-size: 11px; }
+    .tt-hide { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; padding: 0 12px; flex-shrink: 0; }
+    .tt-hide:hover { color: var(--text); }
+
+    .sidebar { width: 230px; background: #0b0f14; border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 16px 12px; flex-shrink: 0; }
+    .brand { font-size: 17px; font-weight: 600; padding: 4px 8px 16px; } .brand .egg { color: var(--accent); }
+    .side-head { display: flex; align-items: center; justify-content: space-between; padding: 8px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+    .side-head button { background: none; border: none; color: var(--muted); font-size: 18px; cursor: pointer; line-height: 1; } .side-head button:hover { color: var(--accent); }
+    .dash-list { overflow-y: auto; flex: 1; }
+    .dash-item { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+    .dash-item:hover { background: var(--panel); } .dash-item.active { background: var(--panel-2); }
+    .dash-item .di-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .dash-item .di-sym { font-size: 11px; color: var(--muted); background: var(--panel); padding: 1px 6px; border-radius: 4px; }
+    .dash-item .di-x { visibility: hidden; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; }
+    .dash-item:hover .di-x { visibility: visible; } .dash-item .di-x:hover { color: var(--red); }
+    .side-foot { color: var(--muted); font-size: 11px; padding: 10px 8px 0; border-top: 1px solid var(--border); }
+    .new-wrap { position: relative; }
+    .new-menu { position: absolute; left: 0; right: 0; top: 100%; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px; z-index: 30; display: none; box-shadow: 0 10px 30px rgba(0,0,0,.5); }
+    .new-menu.open { display: block; }
+    .new-menu .nm-head { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; padding: 6px 10px; }
+    .new-menu button { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--text); padding: 9px 10px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+    .new-menu button:hover { background: var(--panel-2); }
+    .new-menu .nm-sub { display: block; color: var(--muted); font-size: 11px; margin-top: 1px; }
+
+    .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .toolbar { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+    .toolbar .title { font-size: 17px; font-weight: 600; margin-right: auto; }
+    .toolbar input.sym { background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 8px; font-size: 14px; width: 120px; text-transform: uppercase; }
+    .toolbar input.sym:focus { outline: none; border-color: var(--accent); }
+    .ac-wrap { position: relative; }
+    .ac-menu { position: absolute; top: calc(100% + 4px); left: 0; min-width: 300px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; z-index: 60; display: none; max-height: 340px; overflow-y: auto; box-shadow: 0 10px 30px rgba(0,0,0,.5); }
+    .ac-menu.open { display: block; }
+    .ac-item { display: flex; align-items: baseline; gap: 8px; padding: 8px 12px; cursor: pointer; }
+    .ac-item:hover, .ac-item.active { background: var(--panel-2); }
+    .ac-item .s { font-weight: 700; font-size: 14px; }
+    .ac-item .n { color: var(--muted); font-size: 12px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ac-item .x { color: var(--muted); font-size: 11px; }
+    .ln-tabs { display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap; flex-shrink: 0; }
+    .ln-tab { background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; }
+    .ln-tab.active { background: var(--red); color: #fff; border-color: var(--red); }
+    .ln-live { display: inline-flex; align-items: center; gap: 5px; color: var(--red); font-size: 11px; font-weight: 700; }
+    .ln-live .tt-dot { background: var(--red); }
+    .btn { background: var(--accent); color: #fff; border: none; padding: 8px 14px; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; } .btn:hover { opacity: .9; }
+    .btn.secondary { background: var(--panel); border: 1px solid var(--border); color: var(--text); }
+
+    .canvas { flex: 1; overflow-y: auto; padding: 12px; }
+    .grid-stack { background: transparent; }
+    .grid-stack-item-content { inset: 6px !important; width: auto !important; height: auto !important; }
+    .widget { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+    .wh { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); cursor: move; flex-shrink: 0; }
+    .wh-title { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .wh-x { cursor: pointer; color: var(--muted); border: none; background: none; font-size: 15px; line-height: 1; padding: 2px 6px; border-radius: 4px; } .wh-x:hover { color: var(--red); background: var(--panel-2); }
+    .wb { padding: 14px; overflow: auto; flex: 1; } .wb .loading { color: var(--muted); font-size: 13px; } .wb .err { color: var(--red); font-size: 13px; }
+
+    .sym-big { font-size: 20px; font-weight: 700; } .name { font-size: 13px; color: var(--muted); }
+    .price { font-size: 28px; font-weight: 700; margin: 4px 0; } .chg { font-size: 15px; font-weight: 600; } .chg.up { color: var(--green); } .chg.down { color: var(--red); }
+    .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 9px; }
+    .metric { background: var(--panel-2); border-radius: 8px; padding: 8px 10px; } .metric .k { font-size: 11px; color: var(--muted); text-transform: uppercase; } .metric .v { font-size: 14px; font-weight: 600; margin-top: 2px; }
+    .ranges { display: flex; gap: 5px; margin-bottom: 10px; flex-wrap: wrap; } .ranges button { background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); padding: 3px 9px; border-radius: 6px; font-size: 12px; cursor: pointer; } .ranges button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .chart-holder { position: relative; flex: 1; min-height: 80px; }
+    .news-item { padding: 9px 0; border-bottom: 1px solid var(--border); } .news-item:last-child { border-bottom: none; } .news-item a { color: var(--text); text-decoration: none; font-weight: 500; font-size: 14px; } .news-item a:hover { color: var(--accent); } .news-item .meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+    .desc { color: var(--muted); font-size: 13px; margin-top: 10px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; } th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; } th:first-child, td:first-child { text-align: left; } thead th { color: var(--muted); font-weight: 500; text-transform: uppercase; font-size: 11px; }
+    td.call { color: var(--green); } td.put { color: var(--red); }
+    .idx-strip { display: flex; gap: 12px; flex-wrap: wrap; } .idx-strip .metric { flex: 1; min-width: 150px; }
+
+    /* ---- Widget Library modal ---- */
+    .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none; align-items: center; justify-content: center; z-index: 100; }
+    .overlay.open { display: flex; }
+    .modal { background: var(--bg); border: 1px solid var(--border); border-radius: 14px; width: min(920px, 94vw); height: min(680px, 90vh); display: flex; flex-direction: column; overflow: hidden; }
+    .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; font-size: 16px; font-weight: 600; }
+    .modal-head .x { background: none; border: none; color: var(--muted); font-size: 20px; cursor: pointer; }
+    .modal-search { padding: 0 20px 14px; display: flex; gap: 10px; }
+    .modal-search input { flex: 1; background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 10px 14px; border-radius: 8px; font-size: 14px; }
+    .modal-search input:focus { outline: none; border-color: var(--accent); }
+    .modal-body { flex: 1; display: flex; overflow: hidden; border-top: 1px solid var(--border); }
+    .cat-side { width: 160px; border-right: 1px solid var(--border); padding: 12px 8px; overflow-y: auto; flex-shrink: 0; }
+    .cat-side button { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--muted); padding: 9px 12px; border-radius: 7px; font-size: 14px; cursor: pointer; }
+    .cat-side button:hover { background: var(--panel); color: var(--text); } .cat-side button.active { background: var(--panel-2); color: var(--text); }
+    .lib { flex: 1; overflow-y: auto; padding: 8px 16px 16px; }
+    .lib .cat-group { margin-top: 14px; }
+    .lib .cat-h { display: flex; align-items: center; gap: 10px; color: var(--text); font-size: 14px; font-weight: 600; padding: 6px 4px; }
+    .lib .cat-h .count { color: var(--muted); font-weight: 400; }
+    .lib .row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 8px; background: var(--panel); margin-top: 6px; cursor: pointer; }
+    .lib .row:hover { background: var(--panel-2); }
+    .lib .row .r-title { flex: 1; font-size: 14px; }
+    .lib .row .r-src { font-size: 12px; color: var(--muted); }
+    .lib input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+    .modal-foot { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-top: 1px solid var(--border); }
+    .modal-foot .note { color: var(--muted); font-size: 12px; margin-right: auto; }
+  </style>
+</head>
+<body>
+  <div class="ticker-tape" id="tickerTape">
+    <div class="tt-label"><span class="tt-dot"></span> BREAKING</div>
+    <div class="tt-viewport"><div class="tt-track" id="ttTrack"><span style="color:var(--muted);padding:0 16px;">Loading breaking news…</span></div></div>
+    <button class="tt-hide" onclick="hideTicker()" title="Hide ticker">✕</button>
+  </div>
+  <div class="app-row">
+  <aside class="sidebar">
+    <div class="brand">My <span class="egg">OpenBB</span></div>
+    <div class="new-wrap">
+      <div class="side-head"><span>My Dashboards</span><button title="New dashboard" onclick="toggleNewMenu(event)">＋</button></div>
+      <div class="new-menu" id="newMenu">
+        <div class="nm-head">New dashboard</div>
+        <button onclick="newFrom('monitor')">📊 Company Monitor <span class="nm-sub">full research layout</span></button>
+        <button onclick="newFrom('basic')">▫️ Blank <span class="nm-sub">quote · chart · news</span></button>
+      </div>
+    </div>
+    <div class="dash-list" id="dashList"></div>
+    <div class="side-foot">Drag widgets by their header · resize from any edge · everything saves automatically</div>
+  </aside>
+
+  <main class="main">
+    <div class="toolbar">
+      <span class="title" id="dashTitle"></span>
+      <form onsubmit="pickFirstOrGo(); return false;" style="display:flex; gap:8px;">
+        <div class="ac-wrap">
+          <input class="sym" id="ticker" placeholder="Search ticker or name…" autocomplete="off" oninput="onTickerInput()" />
+          <div class="ac-menu" id="acMenu"></div>
+        </div>
+        <button class="btn" type="submit">Go</button>
+      </form>
+      <button class="btn secondary" onclick="openLibrary()">+ Add Widgets</button>
+    </div>
+    <div class="canvas"><div class="grid-stack" id="grid"></div></div>
+  </main>
+  </div>
+
+  <!-- Widget Library modal -->
+  <div class="overlay" id="overlay">
+    <div class="modal">
+      <div class="modal-head"><span>Widget Library</span><button class="x" onclick="closeLibrary()">✕</button></div>
+      <div class="modal-search"><input id="libSearch" placeholder="Search for widgets" oninput="renderLib()" /></div>
+      <div class="modal-body">
+        <div class="cat-side" id="catSide"></div>
+        <div class="lib" id="lib"></div>
+      </div>
+      <div class="modal-foot">
+        <span class="note">All widgets use free <b>yfinance</b> data · richer FMP widgets (Insider Trading, Financial Ratios, Earnings History…) unlock with an FMP API key.</span>
+        <button class="btn secondary" onclick="closeLibrary()">Cancel</button>
+        <button class="btn" id="addBtn" onclick="addSelected()">Add widgets</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ---------- helpers ----------
+    const num = (n, d = 2) => n == null || isNaN(n) ? "—" : Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+    const pct = (n, d = 1) => n == null || isNaN(n) ? "—" : (Number(n) * 100).toFixed(d) + "%";
+    function big(n) { if (n == null || isNaN(n)) return "—"; const a = Math.abs(n); if (a >= 1e12) return "$" + (n / 1e12).toFixed(2) + "T"; if (a >= 1e9) return "$" + (n / 1e9).toFixed(2) + "B"; if (a >= 1e6) return "$" + (n / 1e6).toFixed(2) + "M"; return "$" + num(n, 0); }
+    async function api(path) { const r = await fetch(path); const j = await r.json(); if (!r.ok) throw new Error(j.error || j.detail || ("HTTP " + r.status)); return j; }
+    const first = (j) => (j.results || [])[0] || {}; const rows = (j) => j.results || [];
+    const cell = (k, v) => `<div class="metric"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+    const chgHtml = (c) => { const up = (c ?? 0) >= 0; return `<span style="color:${up ? "var(--green)" : "var(--red)"}">${up ? "▲" : "▼"} ${num(c)}%</span>`; };
+    const charts = {}, chartRange = {};
+    const peers = (sym) => [...new Set([sym, "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN"])].slice(0, 6);
+    const LIVE_CHANNELS = [
+      { name: "Bloomberg", key: "bloomberg", page: "https://www.youtube.com/@markets/live" },
+      { name: "Sky News", key: "skynews", page: "https://www.youtube.com/@SkyNews/live" },
+      { name: "CNBC", key: "cnbc", page: "https://www.youtube.com/@CNBC/live" },
+      { name: "CNN", key: "cnn", page: "https://www.youtube.com/@CNN/live" },
+    ];
+
+    // ---------- widget registry (with categories, mirroring OpenBB) ----------
+    const WIDGETS = {
+      quote: { title: "Quote", cat: "Price", w: 4, h: 5, render: async (sym, b) => {
+        const q = first(await api(`/api/quote?symbol=${sym}`)); const chg = q.last_price != null && q.prev_close != null ? q.last_price - q.prev_close : null; const p = chg != null && q.prev_close ? (chg / q.prev_close) * 100 : null; const up = (chg ?? 0) >= 0;
+        b.innerHTML = `<div><span class="sym-big">${q.symbol ?? sym}</span> <span class="name">${q.name ?? ""}</span></div><div class="price">$${num(q.last_price)}</div><div class="chg ${up ? "up" : "down"}">${up ? "▲" : "▼"} ${num(chg)} (${num(p)}%)</div>
+          <div class="metrics" style="margin-top:12px;">${cell("Open", num(q.open))}${cell("Day High", num(q.high))}${cell("Day Low", num(q.low))}${cell("52w High", num(q.year_high))}${cell("52w Low", num(q.year_low))}${cell("50d MA", num(q.ma_50d))}${cell("200d MA", num(q.ma_200d))}${cell("Volume", q.volume ? Number(q.volume).toLocaleString() : "—")}</div>`;
+      }},
+      chart: { title: "Historical Stock Price", cat: "Price", w: 8, h: 5, render: async (sym, b, uid) => {
+        const RG = ["1mo", "3mo", "6mo", "1y", "5y"]; const cur = chartRange[uid] || "3mo";
+        b.innerHTML = `<div class="ranges">${RG.map((r) => `<button class="${r === cur ? "active" : ""}" data-r="${r}">${r}</button>`).join("")}</div><div class="chart-holder"><canvas></canvas></div>`;
+        b.querySelectorAll(".ranges button").forEach((btn) => btn.onclick = () => { chartRange[uid] = btn.dataset.r; WIDGETS.chart.render(sym, b, uid); });
+        const data = rows(await api(`/api/historical?symbol=${sym}&range=${cur}`)); const labels = data.map((r) => r.date), closes = data.map((r) => r.close); const up = closes.length > 1 && closes[closes.length - 1] >= closes[0]; const color = up ? "#3fb950" : "#f85149";
+        if (charts[uid]) charts[uid].destroy();
+        charts[uid] = new Chart(b.querySelector("canvas"), { type: "line", data: { labels, datasets: [{ data: closes, borderColor: color, borderWidth: 2, pointRadius: 0, tension: .15, fill: true, backgroundColor: (ctx) => { const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 240); g.addColorStop(0, color + "44"); g.addColorStop(1, color + "00"); return g; } }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: "#8b949e", maxTicksLimit: 6 }, grid: { display: false } }, y: { ticks: { color: "#8b949e" }, grid: { color: "#2a3441" } } } } });
+      }},
+      market_overview: { title: "Market Overview", cat: "Price", w: 12, h: 3, render: async (sym, b) => {
+        const idx = [["^GSPC", "S&P 500"], ["^IXIC", "Nasdaq"], ["^DJI", "Dow Jones"], ["^RUT", "Russell 2000"]];
+        b.innerHTML = `<div class="idx-strip">${idx.map(([s, n]) => `<div class="metric" data-idx="${s}"><div class="k">${n}</div><div class="v idx-v">…</div></div>`).join("")}</div>`;
+        await Promise.all(idx.map(async ([s]) => { try { const d = rows(await api(`/api/index?symbol=${encodeURIComponent(s)}&range=1mo`)); const last = d[d.length - 1]?.close, prev = d[d.length - 2]?.close; const chg = last && prev ? (last - prev) / prev * 100 : null; b.querySelector(`[data-idx="${s}"] .idx-v`).innerHTML = `${num(last, 0)} <span style="font-size:12px;">${chgHtml(chg)}</span>`; } catch (e) {} }));
+      }},
+      watchlist: { title: "Watchlist", cat: "Price", w: 6, h: 5, render: async (sym, b) => {
+        const rs = rows(await api(`/api/quotes?symbols=${peers(sym).join(",")}`));
+        b.innerHTML = `<table><thead><tr><th>Symbol</th><th>Name</th><th>Last</th><th>Chg%</th><th>Volume</th></tr></thead><tbody>` + rs.map((q) => { const c = q.last_price != null && q.prev_close != null ? (q.last_price - q.prev_close) / q.prev_close * 100 : null; return `<tr><td><b>${q.symbol}</b></td><td class="name" style="font-size:12px;">${(q.name || "").slice(0, 18)}</td><td>$${num(q.last_price)}</td><td>${chgHtml(c)}</td><td>${q.volume ? Number(q.volume).toLocaleString() : "—"}</td></tr>`; }).join("") + `</tbody></table>`;
+      }},
+      consensus: { title: "Price Target", cat: "Analyst Estimates", w: 4, h: 5, render: async (sym, b) => {
+        const c = first(await api(`/api/consensus?symbol=${sym}`)); const up = c.current_price && c.target_consensus ? ((c.target_consensus - c.current_price) / c.current_price) * 100 : null;
+        b.innerHTML = `<div class="price">$${num(c.target_consensus)} <span class="name" style="font-size:12px;">avg target</span></div>${up != null ? `<div class="chg ${up >= 0 ? "up" : "down"}">${up >= 0 ? "▲" : "▼"} ${num(up)}% vs $${num(c.current_price)}</div>` : ""}<div class="metrics" style="margin-top:12px;">${cell("Recommendation", `<span style="text-transform:capitalize">${c.recommendation ?? "—"}</span>`)}${cell("# Analysts", c.number_of_analysts ?? "—")}${cell("Target High", "$" + num(c.target_high))}${cell("Target Low", "$" + num(c.target_low))}${cell("Median", "$" + num(c.target_median))}</div>`;
+      }},
+      profile: { title: "Ticker Profile", cat: "Asset Overview", w: 6, h: 5, render: async (sym, b) => {
+        const pr = first(await api(`/api/profile?symbol=${sym}`));
+        b.innerHTML = `<div><span class="sym-big">${pr.name ?? sym}</span></div><div class="name">${[pr.sector, pr.industry_category].filter(Boolean).join(" · ")}</div><div class="metrics" style="margin-top:12px;">${cell("Market Cap", big(pr.market_cap))}${cell("Employees", pr.employees ? Number(pr.employees).toLocaleString() : "—")}${cell("HQ", [pr.hq_address_city, pr.hq_country].filter(Boolean).join(", ") || "—")}${cell("Beta", num(pr.beta))}${cell("Div Yield", pr.dividend_yield != null ? pct(pr.dividend_yield) : "—")}</div><div class="desc">${pr.long_description ? pr.long_description.slice(0, 500) + (pr.long_description.length > 500 ? "…" : "") : ""}</div>`;
+      }},
+      management: { title: "Management Team", cat: "Asset Overview", w: 6, h: 5, render: async (sym, b) => {
+        const d = rows(await api(`/api/management?symbol=${sym}`));
+        b.innerHTML = d.length ? `<table><thead><tr><th>Name</th><th>Title</th><th>Pay</th><th>Age</th></tr></thead><tbody>` + d.slice(0, 12).map((r) => `<tr><td>${r.name || "—"}</td><td class="name" style="font-size:12px;">${r.title || "—"}</td><td>${r.pay ? big(r.pay) : "—"}</td><td>${r.age ?? "—"}</td></tr>`).join("") + `</tbody></table>` : `<div class="loading">No management data.</div>`;
+      }},
+      comparison: { title: "Comparison Analysis", cat: "Comparison", w: 8, h: 5, render: async (sym, b) => {
+        const list = peers(sym).slice(0, 5); const res = await Promise.all(list.map(async (s) => { try { return { s, m: first(await api(`/api/metrics?symbol=${s}`)) }; } catch { return { s, m: {} }; } }));
+        const line = (label, key, f = num) => `<tr><td>${label}</td>${res.map((r) => `<td>${f(r.m[key])}</td>`).join("")}</tr>`;
+        b.innerHTML = `<table><thead><tr><th>Metric</th>${res.map((r) => `<th>${r.s}</th>`).join("")}</tr></thead><tbody>` + line("P/E", "pe_ratio") + line("Fwd P/E", "forward_pe") + line("Price/Book", "price_to_book") + line("EV/EBITDA", "enterprise_to_ebitda") + line("Profit Mgn", "profit_margin", pct) + line("ROE", "return_on_equity", pct) + `</tbody></table>`;
+      }},
+      metrics: { title: "Key Metrics", cat: "Fundamental Analysis", w: 4, h: 4, render: async (sym, b) => {
+        const m = first(await api(`/api/metrics?symbol=${sym}`)); b.innerHTML = `<div class="metrics">${cell("P/E", num(m.pe_ratio))}${cell("Fwd P/E", num(m.forward_pe))}${cell("PEG", num(m.peg_ratio))}${cell("Price/Book", num(m.price_to_book))}${cell("EV/EBITDA", num(m.enterprise_to_ebitda))}${cell("Beta", num(m.beta))}</div>`;
+      }},
+      margins: { title: "Valuation Multiples", cat: "Fundamental Analysis", w: 4, h: 4, render: async (sym, b) => {
+        const m = first(await api(`/api/metrics?symbol=${sym}`)); b.innerHTML = `<div class="metrics">${cell("Gross Mgn", pct(m.gross_margin))}${cell("Oper. Mgn", pct(m.operating_margin))}${cell("Profit Mgn", pct(m.profit_margin))}${cell("ROE", pct(m.return_on_equity))}${cell("Rev Growth", pct(m.revenue_growth))}${cell("Debt/Eq", num(m.debt_to_equity))}</div>`;
+      }},
+      income: { title: "Financial Statements", cat: "Fundamental Analysis", w: 8, h: 5, render: async (sym, b) => {
+        const ir = rows(await api(`/api/income?symbol=${sym}`)); const lbl = (r) => (r.period_ending || "").slice(0, 7); const line = (nm, key, f = big) => `<tr><td>${nm}</td>${ir.map((r) => `<td>${f(r[key])}</td>`).join("")}</tr>`;
+        b.innerHTML = `<table><thead><tr><th>Metric</th>${ir.map((r) => `<th>${lbl(r)}</th>`).join("")}</tr></thead><tbody>` + line("Revenue", "total_revenue") + line("Gross Profit", "gross_profit") + line("Operating Income", "operating_income") + line("Net Income", "net_income") + line("EBITDA", "ebitda") + line("Diluted EPS", "diluted_earnings_per_share", (v) => "$" + num(v)) + `</tbody></table>`;
+      }},
+      dividends: { title: "Dividend Payment", cat: "Fundamental Analysis", w: 4, h: 5, render: async (sym, b) => {
+        const d = rows(await api(`/api/dividends?symbol=${sym}`)).slice(-14).reverse(); b.innerHTML = d.length ? `<table><thead><tr><th>Ex-Date</th><th>Amount</th></tr></thead><tbody>` + d.map((r) => `<tr><td>${r.ex_dividend_date}</td><td>$${num(r.amount, 4)}</td></tr>`).join("") + `</tbody></table>` : `<div class="loading">No dividend history.</div>`;
+      }},
+      options: { title: "Options Chain", cat: "Options", w: 8, h: 6, render: async (sym, b) => {
+        const all = rows(await api(`/api/options?symbol=${sym}`)); if (!all.length) { b.innerHTML = `<div class="loading">No options data.</div>`; return; }
+        const under = all[0].underlying_price; const exp = [...new Set(all.map((r) => r.expiration))].sort()[0]; const chain = all.filter((r) => r.expiration === exp); const strikes = [...new Set(chain.map((r) => r.strike))].sort((a, b) => a - b).filter((s) => Math.abs(s - under) <= under * 0.12); const byKey = {}; chain.forEach((r) => byKey[r.option_type + r.strike] = r); const g = (r, k) => r ? num(r[k]) : "—";
+        b.innerHTML = `<div class="name" style="margin-bottom:8px;">Expiry <b style="color:var(--text)">${exp}</b> · underlying $${num(under)}</div><table><thead><tr><th>Call Bid</th><th>Call Ask</th><th>C Vol</th><th>Strike</th><th>Put Bid</th><th>Put Ask</th><th>P Vol</th></tr></thead><tbody>` + strikes.map((s) => { const ca = byKey["call" + s], pu = byKey["put" + s]; return `<tr><td class="call">${g(ca, "bid")}</td><td class="call">${g(ca, "ask")}</td><td>${ca ? (ca.volume ?? "—") : "—"}</td><td><b>${num(s)}</b></td><td class="put">${g(pu, "bid")}</td><td class="put">${g(pu, "ask")}</td><td>${pu ? (pu.volume ?? "—") : "—"}</td></tr>`; }).join("") + `</tbody></table>`;
+      }},
+      news: { title: "News", cat: "News", w: 4, h: 6, render: async (sym, b) => {
+        const items = rows(await api(`/api/news?symbol=${sym}`)); b.innerHTML = items.length ? items.slice(0, 10).map((n) => `<div class="news-item"><a href="${n.url}" target="_blank" rel="noopener">${n.title}</a><div class="meta">${n.source || ""} · ${new Date(n.date).toLocaleDateString()}</div></div>`).join("") : `<div class="loading">No recent news.</div>`;
+      }},
+      rss: { title: "RSS / Atom Feed", cat: "Utils", w: 4, h: 6, render: async (sym, b, uid) => {
+        const inst = active().layout.find((w) => w.uid === uid) || {}; inst.config = inst.config || {};
+        const editUrl = () => { inst.config.url = ""; save(); WIDGETS.rss.render(sym, b, uid); };
+        const TICKER_FEED = "https://news.google.com/rss/search?q={ticker}+stock&hl=en-US";
+        const DEFAULT_FEED = "https://feeds.bbci.co.uk/news/business/rss.xml";
+        if (!inst.config.url) {
+          b.innerHTML = `<div class="name" style="margin-bottom:8px;">Follow the selected ticker's news, or paste any feed URL:</div>
+            <button class="btn follow" style="margin-bottom:12px;">🔗 Follow selected ticker (${sym})</button>
+            <div class="name" style="font-size:12px;margin-bottom:6px;">— or a fixed feed —</div>
+            <input class="rss-url" style="width:100%;background:var(--panel-2);border:1px solid var(--border);color:var(--text);padding:9px;border-radius:6px;font-size:13px;" value="${DEFAULT_FEED}" />
+            <button class="btn secondary load" style="margin-top:10px;">Load feed</button>
+            <div class="name" style="margin-top:12px;font-size:12px;">Tip: put <b>{ticker}</b> anywhere in a feed URL to make it follow the selected ticker.</div>`;
+          const inp = b.querySelector(".rss-url"); inp.onkeydown = (e) => { if (e.key === "Enter") b.querySelector(".load").click(); };
+          b.querySelector(".follow").onclick = () => { inst.config.url = TICKER_FEED; save(); WIDGETS.rss.render(sym, b, uid); };
+          b.querySelector(".load").onclick = () => { const v = inp.value.trim() || DEFAULT_FEED; inst.config.url = v; save(); WIDGETS.rss.render(sym, b, uid); };
+          return;
+        }
+        const linked = /\{ticker\}/i.test(inst.config.url);
+        const actualUrl = inst.config.url.replace(/\{ticker\}/gi, encodeURIComponent(sym));
+        b.innerHTML = `<div class="loading">Loading feed…</div>`;
+        try {
+          const items = rows(await api(`/api/rss?url=${encodeURIComponent(actualUrl)}`));
+          b.innerHTML = `<div class="name" style="margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${linked ? "📈 Following " + sym : (items[0]?.source || "Feed")}</div>` +
+            (items.length ? items.slice(0, 15).map((n) => `<div class="news-item"><a href="${n.link || "#"}" target="_blank" rel="noopener">${n.title}</a><div class="meta">${n.date ? new Date(n.date).toLocaleString() : ""}</div></div>`).join("") : `<div class="loading">No items in feed.</div>`) +
+            `<div style="margin-top:10px;"><button class="btn secondary" style="font-size:12px;padding:5px 10px;">Change feed</button></div>`;
+          b.querySelector(".btn.secondary").onclick = editUrl;
+        } catch (e) {
+          b.innerHTML = `<div class="err">${e.message}</div><div style="margin-top:10px;"><button class="btn secondary" style="font-size:12px;padding:5px 10px;">Change feed</button></div>`;
+          b.querySelector(".btn.secondary").onclick = editUrl;
+        }
+      }},
+      iframe: { title: "Iframe", cat: "Utils", w: 6, h: 6, render: (sym, b, uid) => {
+        const inst = active().layout.find((w) => w.uid === uid) || {}; inst.config = inst.config || {};
+        const edit = () => { inst.config.url = ""; save(); WIDGETS.iframe.render(sym, b, uid); };
+        if (!inst.config.url) {
+          b.innerHTML = `<div class="name" style="margin-bottom:8px;">Embed any web page — paste a URL:</div><input class="cfg-url" style="width:100%;background:var(--panel-2);border:1px solid var(--border);color:var(--text);padding:9px;border-radius:6px;font-size:13px;" placeholder="https://example.com" /><button class="btn" style="margin-top:10px;">Embed</button><div class="name" style="margin-top:10px;font-size:12px;">Note: some sites block embedding (X-Frame-Options).</div>`;
+          const inp = b.querySelector(".cfg-url"); inp.onkeydown = (e) => { if (e.key === "Enter") b.querySelector("button").click(); };
+          b.querySelector("button").onclick = () => { const v = inp.value.trim(); if (v) { inst.config.url = /^https?:/.test(v) ? v : "https://" + v; save(); WIDGETS.iframe.render(sym, b, uid); } };
+          return;
+        }
+        b.innerHTML = `<div style="height:100%;display:flex;flex-direction:column;"><div style="margin-bottom:6px;"><button class="btn secondary" style="font-size:11px;padding:3px 8px;">Change URL</button></div><iframe src="${inst.config.url}" style="flex:1;width:100%;border:0;border-radius:6px;background:#fff;"></iframe></div>`;
+        b.querySelector(".btn.secondary").onclick = edit;
+      }},
+      youtube: { title: "YouTube", cat: "Utils", w: 6, h: 5, render: (sym, b, uid) => {
+        const inst = active().layout.find((w) => w.uid === uid) || {}; inst.config = inst.config || {};
+        const edit = () => { inst.config.url = ""; save(); WIDGETS.youtube.render(sym, b, uid); };
+        const vid = (u) => { const m = String(u).match(/(?:v=|\/embed\/|youtu\.be\/)([\w-]{11})/); return m ? m[1] : null; };
+        if (!inst.config.url) {
+          b.innerHTML = `<div class="name" style="margin-bottom:8px;">Paste a YouTube video URL:</div><input class="cfg-url" style="width:100%;background:var(--panel-2);border:1px solid var(--border);color:var(--text);padding:9px;border-radius:6px;font-size:13px;" placeholder="https://www.youtube.com/watch?v=…" /><button class="btn" style="margin-top:10px;">Embed</button>`;
+          const inp = b.querySelector(".cfg-url"); inp.onkeydown = (e) => { if (e.key === "Enter") b.querySelector("button").click(); };
+          b.querySelector("button").onclick = () => { const v = inp.value.trim(); if (v) { inst.config.url = v; save(); WIDGETS.youtube.render(sym, b, uid); } };
+          return;
+        }
+        const id = vid(inst.config.url);
+        b.innerHTML = id ? `<div style="height:100%;display:flex;flex-direction:column;"><div style="margin-bottom:6px;"><button class="btn secondary" style="font-size:11px;padding:3px 8px;">Change</button></div><iframe src="https://www.youtube.com/embed/${id}" style="flex:1;width:100%;border:0;border-radius:6px;" allowfullscreen></iframe></div>` : `<div class="err">Couldn't find a video id in that URL.</div><div style="margin-top:10px;"><button class="btn secondary" style="font-size:11px;padding:3px 8px;">Change</button></div>`;
+        b.querySelector(".btn.secondary").onclick = edit;
+      }},
+      endpoint: { title: "Custom Endpoint (JSON)", cat: "Utils", w: 6, h: 5, render: async (sym, b, uid) => {
+        const inst = active().layout.find((w) => w.uid === uid) || {}; inst.config = inst.config || {};
+        const edit = () => { inst.config.url = ""; save(); WIDGETS.endpoint.render(sym, b, uid); };
+        if (!inst.config.url) {
+          b.innerHTML = `<div class="name" style="margin-bottom:8px;">Any REST API returning JSON:</div><input class="cfg-url" style="width:100%;background:var(--panel-2);border:1px solid var(--border);color:var(--text);padding:9px;border-radius:6px;font-size:13px;" placeholder="https://api.example.com/data.json" /><button class="btn" style="margin-top:10px;">Load</button><div class="name" style="margin-top:10px;font-size:12px;">Renders a JSON array (or {results:[…]}) as a table.</div>`;
+          const inp = b.querySelector(".cfg-url"); inp.onkeydown = (e) => { if (e.key === "Enter") b.querySelector("button").click(); };
+          b.querySelector("button").onclick = () => { const v = inp.value.trim(); if (v) { inst.config.url = v; save(); WIDGETS.endpoint.render(sym, b, uid); } };
+          return;
+        }
+        b.innerHTML = `<div class="loading">Loading…</div>`;
+        const changeBtn = `<div style="margin-top:10px;"><button class="btn secondary" style="font-size:11px;padding:3px 8px;">Change</button></div>`;
+        try {
+          const j = await api(`/api/proxy?url=${encodeURIComponent(inst.config.url)}`);
+          const data = Array.isArray(j) ? j : (j.results || j.data || j);
+          if (Array.isArray(data) && data.length && typeof data[0] === "object") {
+            const cols = [...new Set(data.flatMap((r) => Object.keys(r)))].slice(0, 8);
+            b.innerHTML = `<div class="table-wrap"><table><thead><tr>${cols.map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>` + data.slice(0, 50).map((r) => `<tr>${cols.map((c) => `<td>${r[c] == null ? "—" : String(typeof r[c] === "object" ? JSON.stringify(r[c]) : r[c]).slice(0, 40)}</td>`).join("")}</tr>`).join("") + `</tbody></table></div>` + changeBtn;
+          } else { b.innerHTML = `<pre style="white-space:pre-wrap;font-size:12px;color:var(--muted);overflow:auto;">${JSON.stringify(data, null, 2).slice(0, 2000)}</pre>` + changeBtn; }
+          b.querySelector(".btn.secondary").onclick = edit;
+        } catch (e) { b.innerHTML = `<div class="err">${e.message}</div>` + changeBtn; b.querySelector(".btn.secondary").onclick = edit; }
+      }},
+      live_news: { title: "Live News (TV)", cat: "Utils", w: 6, h: 6, render: async (sym, b, uid) => {
+        const inst = active().layout.find((w) => w.uid === uid) || {}; inst.config = inst.config || {};
+        const act = inst.config.channel || LIVE_CHANNELS[0].name;
+        b.style.display = "flex"; b.style.flexDirection = "column";
+        b.innerHTML = `<div class="ln-tabs">${LIVE_CHANNELS.map((c) => `<button class="ln-tab ${c.name === act ? "active" : ""}" data-c="${c.name}">${c.name}</button>`).join("")}</div><div class="ln-body" style="flex:1;display:flex;flex-direction:column;min-height:0;"><div class="loading">Finding ${act} live stream…</div></div>`;
+        b.querySelectorAll(".ln-tab").forEach((t) => t.onclick = () => { inst.config.channel = t.dataset.c; save(); WIDGETS.live_news.render(sym, b, uid); });
+        const body = b.querySelector(".ln-body"); const ch = LIVE_CHANNELS.find((c) => c.name === act);
+        try {
+          const r = await api(`/api/livestream?channel=${ch.key}`);
+          body.innerHTML = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;"><span class="ln-live"><span class="tt-dot"></span>LIVE</span><span class="name" style="font-size:12px;">${act} · muted (click to unmute)</span></div>
+            <iframe src="https://www.youtube.com/embed/${r.video_id}?autoplay=1&mute=1" style="flex:1;width:100%;border:0;border-radius:6px;" allow="autoplay; encrypted-media" allowfullscreen></iframe>`;
+        } catch (e) {
+          body.innerHTML = `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;"><div class="err">${act} live unavailable right now.</div><a class="btn" style="text-decoration:none;" href="${ch.page}" target="_blank" rel="noopener">▶ Open ${act} Live ↗</a></div>`;
+        }
+      }},
+    };
+    const CATS = ["Price", "Analyst Estimates", "Asset Overview", "Comparison", "Fundamental Analysis", "Options", "News", "Utils"];
+    const DEFAULT_LAYOUT = () => ([
+      { uid: uid(), type: "quote", x: 0, y: 0, w: 4, h: 5 }, { uid: uid(), type: "chart", x: 4, y: 0, w: 8, h: 5 },
+      { uid: uid(), type: "metrics", x: 0, y: 5, w: 4, h: 4 }, { uid: uid(), type: "news", x: 8, y: 5, w: 4, h: 6 },
+    ]);
+    // One-click dashboard templates (à la OpenBB's "Apps")
+    const TEMPLATES = {
+      basic: () => DEFAULT_LAYOUT(),
+      monitor: () => ([
+        { uid: uid(), type: "quote", x: 0, y: 0, w: 3, h: 5 }, { uid: uid(), type: "chart", x: 3, y: 0, w: 9, h: 5 },
+        { uid: uid(), type: "profile", x: 0, y: 5, w: 6, h: 6 }, { uid: uid(), type: "metrics", x: 6, y: 5, w: 3, h: 6 }, { uid: uid(), type: "margins", x: 9, y: 5, w: 3, h: 6 },
+        { uid: uid(), type: "consensus", x: 0, y: 11, w: 3, h: 5 }, { uid: uid(), type: "comparison", x: 3, y: 11, w: 9, h: 5 },
+        { uid: uid(), type: "income", x: 0, y: 16, w: 8, h: 5 }, { uid: uid(), type: "dividends", x: 8, y: 16, w: 4, h: 5 },
+        { uid: uid(), type: "management", x: 0, y: 21, w: 6, h: 5 }, { uid: uid(), type: "news", x: 6, y: 21, w: 6, h: 6 },
+      ]),
+    };
+
+    // ---------- state ----------
+    const KEY = "obb_workspace_v3"; let _seq = Date.now();
+    function uid() { return String(_seq++); }
+    function load() { try { return JSON.parse(localStorage.getItem(KEY)); } catch { return null; } }
+    function save() { localStorage.setItem(KEY, JSON.stringify(state)); }
+    let state = load();
+    if (!state || !state.dashboards || !state.dashboards.length) { const id = uid(); state = { activeId: id, dashboards: [{ id, name: "AAPL", symbol: "AAPL", layout: TEMPLATES.monitor() }] }; save(); }
+    const active = () => state.dashboards.find((d) => d.id === state.activeId) || state.dashboards[0];
+
+    // ---------- grid ----------
+    let grid = GridStack.init({ column: 12, cellHeight: 64, margin: 0, float: true, handle: ".wh", resizable: { handles: "e, se, s, sw, w" } }, "#grid");
+    grid.on("change", persistLayout);
+    grid.on("resizestop", (e, el) => { const u = el.getAttribute("gs-id"); if (charts[u]) charts[u].resize(); });
+
+    function makeItem(inst) {
+      const w = WIDGETS[inst.type]; const el = document.createElement("div"); el.className = "grid-stack-item"; el.setAttribute("gs-id", inst.uid); el.setAttribute("gs-w", inst.w || w.w); el.setAttribute("gs-h", inst.h || w.h); if (inst.x != null) el.setAttribute("gs-x", inst.x); if (inst.y != null) el.setAttribute("gs-y", inst.y);
+      el.innerHTML = `<div class="grid-stack-item-content"><div class="widget"><div class="wh"><span class="wh-title">${w.title}</span><button class="wh-x" title="Remove">✕</button></div><div class="wb"><div class="loading">Loading…</div></div></div></div>`;
+      el.querySelector(".wh-x").onclick = () => removeWidget(inst.uid, el); return el;
+    }
+    async function fill(el, inst) { const body = el.querySelector(".wb"); try { await WIDGETS[inst.type].render(active().symbol, body, inst.uid); } catch (e) { body.innerHTML = `<div class="err">Error: ${e.message}</div>`; } }
+    function renderGrid() { grid.removeAll(); Object.keys(charts).forEach((k) => { charts[k]?.destroy(); delete charts[k]; }); for (const inst of active().layout) { const el = makeItem(inst); grid.el.appendChild(el); grid.makeWidget(el); fill(el, inst); } }
+    function persistLayout() { const nodes = grid.save(false); const d = active(); const typeByUid = Object.fromEntries(d.layout.map((w) => [w.uid, w.type])); const cfgByUid = Object.fromEntries(d.layout.map((w) => [w.uid, w.config])); d.layout = nodes.map((n) => ({ uid: String(n.id), type: typeByUid[String(n.id)], x: n.x, y: n.y, w: n.w, h: n.h, config: cfgByUid[String(n.id)] })).filter((w) => w.type); save(); }
+
+    // ---------- widget actions ----------
+    function addWidgetInstance(type) { const w = WIDGETS[type]; const inst = { uid: uid(), type, w: w.w, h: w.h }; const el = makeItem(inst); grid.el.appendChild(el); grid.makeWidget(el); active().layout.push(inst); fill(el, inst); }
+    function removeWidget(u, el) { grid.removeWidget(el); if (charts[u]) { charts[u].destroy(); delete charts[u]; } active().layout = active().layout.filter((w) => w.uid !== u); save(); }
+    function setSymbol() { const v = document.getElementById("ticker").value.trim().toUpperCase(); if (!v) return; active().symbol = v; save(); renderSidebar(); renderTitle(); refreshData(); }
+    function refreshData() { for (const inst of active().layout) { const el = grid.el.querySelector(`[gs-id="${inst.uid}"]`); if (el) { el.querySelector(".wb").innerHTML = `<div class="loading">Loading…</div>`; fill(el, inst); } } }
+
+    // ---------- ticker autocomplete ----------
+    let acTimer = null, acItems = [], acActive = -1;
+    function onTickerInput() {
+      const v = document.getElementById("ticker").value.trim(); clearTimeout(acTimer);
+      if (!v) { closeAc(); return; }
+      acTimer = setTimeout(async () => { try { acItems = rows(await api(`/api/search?q=${encodeURIComponent(v)}`)); acActive = -1; renderAc(); } catch { closeAc(); } }, 160);
+    }
+    function renderAc() {
+      const m = document.getElementById("acMenu"); if (!acItems.length) { closeAc(); return; }
+      m.innerHTML = acItems.map((x, i) => `<div class="ac-item ${i === acActive ? "active" : ""}" data-i="${i}"><span class="s">${x.symbol}</span><span class="n">${x.name || ""}</span><span class="x">${x.exchange || ""}</span></div>`).join("");
+      m.querySelectorAll(".ac-item").forEach((el) => el.onmousedown = (e) => { e.preventDefault(); pickAc(+el.dataset.i); });
+      m.classList.add("open");
+    }
+    function closeAc() { document.getElementById("acMenu").classList.remove("open"); }
+    function pickAc(i) { const x = acItems[i]; if (!x) return; document.getElementById("ticker").value = x.symbol; closeAc(); active().symbol = x.symbol.toUpperCase(); save(); renderSidebar(); renderTitle(); refreshData(); }
+    function pickFirstOrGo() { const m = document.getElementById("acMenu"); if (m.classList.contains("open") && acItems.length) pickAc(acActive >= 0 ? acActive : 0); else setSymbol(); }
+
+    // ---------- dashboards ----------
+    function switchDashboard(id) { state.activeId = id; save(); openActive(); }
+    function toggleNewMenu(e) { e.stopPropagation(); document.getElementById("newMenu").classList.toggle("open"); }
+    function newFrom(tpl) {
+      document.getElementById("newMenu").classList.remove("open");
+      const t = (prompt("Ticker to monitor (e.g. MSFT):", "") || "").trim().toUpperCase(); if (!t) return;
+      const id = uid(); state.dashboards.push({ id, name: t, symbol: t, layout: (TEMPLATES[tpl] || TEMPLATES.basic)() }); state.activeId = id; save(); openActive();
+    }
+    document.addEventListener("click", (e) => { const m = document.getElementById("newMenu"); if (m && !m.parentElement.contains(e.target)) m.classList.remove("open"); });
+    function deleteDashboard(id, ev) { ev.stopPropagation(); if (state.dashboards.length === 1) { alert("Keep at least one dashboard."); return; } if (!confirm("Delete this dashboard?")) return; state.dashboards = state.dashboards.filter((d) => d.id !== id); if (state.activeId === id) state.activeId = state.dashboards[0].id; save(); openActive(); }
+    function renameDashboard(id, ev) { ev.stopPropagation(); const d = state.dashboards.find((x) => x.id === id); const n = (prompt("Rename dashboard:", d.name) || "").trim(); if (n) { d.name = n; save(); renderSidebar(); renderTitle(); } }
+    function renderSidebar() { document.getElementById("dashList").innerHTML = state.dashboards.map((d) => `<div class="dash-item ${d.id === state.activeId ? "active" : ""}" onclick="switchDashboard('${d.id}')" ondblclick="renameDashboard('${d.id}', event)" title="Double-click to rename"><span class="di-name">${d.name}</span><span class="di-sym">${d.symbol}</span><button class="di-x" onclick="deleteDashboard('${d.id}', event)" title="Delete">✕</button></div>`).join(""); }
+    function renderTitle() { document.getElementById("dashTitle").textContent = active().name; document.getElementById("ticker").value = active().symbol; }
+    function openActive() { renderSidebar(); renderTitle(); renderGrid(); }
+
+    // ---------- Widget Library modal ----------
+    let libCat = "All"; const selected = new Set();
+    function openLibrary() { selected.clear(); document.getElementById("libSearch").value = ""; libCat = "All"; renderCatSide(); renderLib(); document.getElementById("overlay").classList.add("open"); }
+    function closeLibrary() { document.getElementById("overlay").classList.remove("open"); }
+    function renderCatSide() {
+      document.getElementById("catSide").innerHTML = [["All", "All"], ...CATS.map((c) => [c, c])].map(([c]) => `<button class="${c === libCat ? "active" : ""}" onclick="setLibCat('${c.replace(/'/g, "")}')">${c}</button>`).join("");
+    }
+    function setLibCat(c) { libCat = c; renderCatSide(); renderLib(); }
+    function renderLib() {
+      const q = document.getElementById("libSearch").value.trim().toLowerCase();
+      const cats = libCat === "All" ? CATS : [libCat];
+      let html = "";
+      for (const cat of cats) {
+        const items = Object.entries(WIDGETS).filter(([t, w]) => w.cat === cat && w.title.toLowerCase().includes(q));
+        if (!items.length) continue;
+        html += `<div class="cat-group"><div class="cat-h"><input type="checkbox" onchange="toggleCat('${cat}', this.checked)" ${items.every(([t]) => selected.has(t)) ? "checked" : ""}/> ${cat} <span class="count">(${items.length})</span></div>` +
+          items.map(([t, w]) => `<label class="row"><input type="checkbox" ${selected.has(t) ? "checked" : ""} onchange="toggleWidget('${t}', this.checked)"/><span class="r-title">${w.title}</span><span class="r-src">${w.cat === "Utils" ? "custom" : "yfinance"}</span></label>`).join("") + `</div>`;
+      }
+      document.getElementById("lib").innerHTML = html || `<div class="loading" style="padding:20px;">No widgets match.</div>`;
+      document.getElementById("addBtn").textContent = selected.size ? `Add ${selected.size} widget${selected.size > 1 ? "s" : ""}` : "Add widgets";
+    }
+    function toggleWidget(t, on) { on ? selected.add(t) : selected.delete(t); renderLib(); }
+    function toggleCat(cat, on) { Object.entries(WIDGETS).filter(([t, w]) => w.cat === cat).forEach(([t]) => on ? selected.add(t) : selected.delete(t)); renderLib(); }
+    function addSelected() { if (!selected.size) return closeLibrary(); for (const t of selected) addWidgetInstance(t); persistLayout(); closeLibrary(); }
+    document.getElementById("overlay").addEventListener("click", (e) => { if (e.target.id === "overlay") closeLibrary(); });
+
+    // ---------- breaking-news ticker (multi-source, à la World Monitor LIVE NEWS) ----------
+    async function loadTicker() {
+      const track = document.getElementById("ttTrack"); if (!track) return;
+      try {
+        const items = rows(await api(`/api/breaking`));
+        if (!items.length) { track.innerHTML = `<span style="color:var(--muted);padding:0 16px;">No headlines right now.</span>`; return; }
+        const one = items.map((n) => `<a class="tt-item" href="${n.link || "#"}" target="_blank" rel="noopener"><span class="src">${n.source || ""}</span>${n.title}</a><span class="tt-sep">◆</span>`).join("");
+        track.innerHTML = one + one; // duplicate for a seamless loop
+        track.style.animationDuration = Math.max(80, items.length * 6) + "s";
+      } catch (e) { track.innerHTML = `<span style="color:var(--muted);padding:0 16px;">Breaking news unavailable.</span>`; }
+    }
+    function hideTicker() { document.getElementById("tickerTape").classList.add("hidden"); }
+
+    // ---------- init ----------
+    document.getElementById("ticker").addEventListener("keydown", (e) => {
+      const m = document.getElementById("acMenu"); if (!m.classList.contains("open")) return;
+      if (e.key === "ArrowDown") { e.preventDefault(); acActive = Math.min(acActive + 1, acItems.length - 1); renderAc(); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); acActive = Math.max(acActive - 1, 0); renderAc(); }
+      else if (e.key === "Escape") closeAc();
+    });
+    document.addEventListener("click", (e) => { if (!e.target.closest(".ac-wrap")) closeAc(); });
+    openActive();
+    loadTicker(); setInterval(loadTicker, 3 * 60 * 1000);
+  </script>
+</body>
+</html>

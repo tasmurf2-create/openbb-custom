@@ -1,0 +1,39 @@
+# Render blueprint — deploys BOTH services for a fully self-hosted personal setup:
+#   1. openbb-api   : the OpenBB Platform data API (full package, installs cleanly on Render's Linux)
+#   2. openbb-webapp: this frontend, pointed at the API above via OPENBB_API_URL
+#
+# On Render (Linux x86-64) the full `openbb` package installs with prebuilt wheels —
+# no compiler needed, unlike your local ARM Windows machine.
+#
+# Deploy: push this repo to GitHub, then in Render: New > Blueprint > pick this repo.
+
+services:
+  - type: web
+    name: openbb-api
+    runtime: python
+    # Root of the OpenBB repo (this file lives in webapp/, so go up one level).
+    rootDir: .
+    buildCommand: pip install openbb "uvicorn[standard]"
+    startCommand: uvicorn openbb_core.api.rest_api:app --host 0.0.0.0 --port $PORT
+    plan: starter   # 'free' also works but sleeps after inactivity
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.10"
+
+  - type: web
+    name: openbb-webapp
+    runtime: python
+    rootDir: webapp
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    plan: starter
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.10"
+      # Point the frontend at the API service above. After first deploy, set this
+      # to the openbb-api service's URL (Render shows it, e.g. https://openbb-api.onrender.com).
+      - key: OPENBB_API_URL
+        fromService:
+          type: web
+          name: openbb-api
+          property: hostport
