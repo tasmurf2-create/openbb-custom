@@ -70,6 +70,15 @@
     .ln-tab.active { background: var(--red); color: #fff; border-color: var(--red); }
     .ln-live { display: inline-flex; align-items: center; gap: 5px; color: var(--red); font-size: 11px; font-weight: 700; }
     .ln-live .tt-dot { background: var(--red); }
+    .mm-lb { display: block; font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+    .mm-in { width: 100%; margin-top: 3px; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); padding: 7px; border-radius: 6px; font-size: 13px; }
+    .mm-in:focus { outline: none; border-color: var(--accent); }
+    .mm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 10px; }
+    .skel { background: linear-gradient(90deg, var(--panel-2) 25%, #232c3a 37%, var(--panel-2) 63%); background-size: 400% 100%; animation: shimmer 1.4s ease infinite; border-radius: 6px; display: inline-block; }
+    @keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+    .wh-gear { cursor: pointer; color: var(--muted); border: none; background: none; font-size: 13px; padding: 2px 4px; border-radius: 4px; }
+    .wh-gear:hover { color: var(--accent); background: var(--panel-2); }
+    .wh-sym { font-size: 10px; color: var(--accent); background: var(--panel-2); padding: 1px 6px; border-radius: 4px; font-weight: 600; }
     .btn { background: var(--accent); color: #fff; border: none; padding: 8px 14px; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; } .btn:hover { opacity: .9; }
     .btn.secondary { background: var(--panel); border: 1px solid var(--border); color: var(--text); }
 
@@ -180,6 +189,24 @@
     const pct = (n, d = 1) => n == null || isNaN(n) ? "—" : (Number(n) * 100).toFixed(d) + "%";
     function big(n) { if (n == null || isNaN(n)) return "—"; const a = Math.abs(n); if (a >= 1e12) return "$" + (n / 1e12).toFixed(2) + "T"; if (a >= 1e9) return "$" + (n / 1e9).toFixed(2) + "B"; if (a >= 1e6) return "$" + (n / 1e6).toFixed(2) + "M"; return "$" + num(n, 0); }
     async function api(path) { const r = await fetch(path); const j = await r.json(); if (!r.ok) throw new Error(j.error || j.detail || ("HTTP " + r.status)); return j; }
+    async function post(path, body) { const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); const j = await r.json(); if (!r.ok) throw new Error(j.error || j.detail || ("HTTP " + r.status)); return j; }
+    async function postFile(path, file) { const fd = new FormData(); fd.append("file", file); const r = await fetch(path, { method: "POST", body: fd }); const j = await r.json(); if (!r.ok) throw new Error(j.error || j.detail || ("HTTP " + r.status)); return j; }
+    // ---- My Wealth shared store: uploaded statements feed the projector + news radar ----
+    const WEALTH_KEY = "obb_wealth_holdings";
+    function wealthStore() { try { return JSON.parse(localStorage.getItem(WEALTH_KEY)) || {}; } catch { return {}; } }
+    function saveWealthHoldings(kind, result) {
+      const store = wealthStore();
+      store[kind] = {
+        holdings: (result.holdings || []).map((h) => ({ name: h.name, category: h.fundType || h.category, ticker: h.ticker })),
+        total: result.totalValue, currency: result.currency || "EUR", updated: Date.now(),
+      };
+      store.updated = Date.now();
+      localStorage.setItem(WEALTH_KEY, JSON.stringify(store));
+      window.dispatchEvent(new CustomEvent("wealth-holdings-updated"));
+    }
+    const wealthSyncWired = new Set();
+    const CURSYM = { EUR: "€", USD: "$", GBP: "£" };
+    const money = (n, c = "EUR") => n == null || isNaN(n) ? "—" : (CURSYM[c] || "€") + Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
     const first = (j) => (j.results || [])[0] || {}; const rows = (j) => j.results || [];
     const cell = (k, v) => `<div class="metric"><div class="k">${k}</div><div class="v">${v}</div></div>`;
     const chgHtml = (c) => { const up = (c ?? 0) >= 0; return `<span style="color:${up ? "var(--green)" : "var(--red)"}">${up ? "▲" : "▼"} ${num(c)}%</span>`; };
@@ -347,8 +374,195 @@
           body.innerHTML = `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;"><div class="err">${act} live unavailable right now.</div><a class="btn" style="text-decoration:none;" href="${ch.page}" target="_blank" rel="noopener">▶ Open ${act} Live ↗</a></div>`;
         }
       }},
+      projector: { title: "Retirement Projector (Irish)", cat: "My Money", w: 8, h: 11, render: async (sym, b, uid) => {
+        const inst = active().layout.find((w) => w.uid === uid) || {}; const c = inst.config = inst.config || {};
+        // Sync the pension pot from the latest uploaded pension statement. Re-syncs
+        // once per new upload; manual edits between uploads are preserved.
+        const ps = wealthStore().pension;
+        if (ps && ps.total && c._pensionSyncTs !== ps.updated) { c.pension_pot = Math.round(ps.total); c._pensionSyncTs = ps.updated; save(); }
+        // Re-render this widget whenever a fresh statement is uploaded.
+        if (!wealthSyncWired.has(uid)) { wealthSyncWired.add(uid); window.addEventListener("wealth-holdings-updated", () => { const body = document.querySelector(`[gs-id="${uid}"] .wb`); if (body) WIDGETS.projector.render(sym, body, uid); }); }
+        const F = [["pension_pot", "Pension pot €", 250000], ["age", "Age", 43], ["annual_income", "Salary €/yr", 150000], ["monthly_contrib", "Your contrib €/mo", 1500], ["employer_pension", "Employer €/yr", 20000], ["ret_age", "Retire age", 65], ["kkr_total_usd", "KKR portfolio $", 0], ["unvested_equity_usd", "Unvested equity $", 0], ["cash_bonus", "Cash bonus €", 0], ["fx_rate", "USD→EUR", 0.92]];
+        const syncNote = ps && ps.total ? `<div style="font-size:11px;color:var(--muted);margin-bottom:8px;">📄 Pension pot synced from your uploaded statement (${money(ps.total, ps.currency)}). Edit any field and press Calculate. <a href="#" class="resync" style="color:var(--accent);">Re-sync</a></div>` : "";
+        b.innerHTML = syncNote + `<div class="mm-grid">${F.map(([k, l, def]) => `<label class="mm-lb" style="margin:0;">${l}<input class="mm-in" data-k="${k}" value="${c[k] ?? def}" /></label>`).join("")}</div><button class="btn calc">Calculate</button><div class="pout" style="margin-top:12px;"><div class="skel" style="height:80px;width:100%;"></div></div>`;
+        const rs = b.querySelector(".resync"); if (rs) rs.onclick = (e) => { e.preventDefault(); c._pensionSyncTs = null; WIDGETS.projector.render(sym, b, uid); };
+        const run = async () => {
+          F.forEach(([k]) => c[k] = b.querySelector(`[data-k="${k}"]`).value); save();
+          const out = b.querySelector(".pout"); out.innerHTML = `<div class="skel" style="height:80px;width:100%;"></div>`;
+          try {
+            const r = await post(`/api/wealth/projector`, c);
+            out.innerHTML = `<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:10px;"><div style="font-size:34px;font-weight:800;">${r.score}<span style="font-size:16px;color:var(--muted);">/100</span></div><div><div class="chg ${r.score >= 70 ? "up" : r.score >= 50 ? "" : "down"}" style="font-size:20px;">Grade ${r.grade}</div><div class="name">Pension ${r.pension_peer} · Wealth ${r.wealth_peer}</div></div></div>
+              <div class="metrics">${cell("Pension @" + r.ret_age, big(r.proj_pension_ret))}${cell("SFT limit", big(r.sft_ret))}${cell("SFT excess", big(r.sft_excess_ret))}${cell("CET liability", big(r.cet_liability_ret))}${cell("Total @" + r.ret_age, big(r.proj_total_ret))}${cell("Ret. income/yr", big(r.proj_income_ret))}${cell("Savings rate", r.savings_rate + "%")}${cell("SFT breach age", r.sft_breach_age || "none")}</div>
+              ${r.risks.length ? `<div style="margin-top:12px;"><div class="wh-title" style="margin-bottom:6px;">Risks</div>${r.risks.map((x) => `<div class="news-item" style="font-size:13px;">⚠️ ${x}</div>`).join("")}</div>` : ""}
+              ${r.actions.length ? `<div style="margin-top:12px;"><div class="wh-title" style="margin-bottom:6px;">Actions</div>${r.actions.map((x) => `<div class="news-item" style="font-size:13px;">✅ ${x}</div>`).join("")}</div>` : ""}`;
+          } catch (e) { out.innerHTML = `<div class="err">${e.message}</div>`; }
+        };
+        b.querySelector(".calc").onclick = run; run();
+      }},
+      cgt: { title: "CGT Calculator (Irish 33%)", cat: "My Money", w: 4, h: 6, render: async (sym, b, uid) => {
+        const inst = active().layout.find((w) => w.uid === uid) || {}; const c = inst.config = inst.config || {};
+        b.innerHTML = `<label class="mm-lb">Sale proceeds €<input class="mm-in" data-k="proceeds" value="${c.proceeds ?? 10000}" /></label><label class="mm-lb">Cost basis €<input class="mm-in" data-k="cost" value="${c.cost ?? 7000}" /></label><label class="mm-lb">Prior gains used €<input class="mm-in" data-k="prior" value="${c.prior ?? 0}" /></label><button class="btn calc" style="margin-top:4px;">Calculate</button><div class="cgout" style="margin-top:12px;"></div>`;
+        const run = async () => {
+          const g = (k) => b.querySelector(`[data-k="${k}"]`).value; c.proceeds = g("proceeds"); c.cost = g("cost"); c.prior = g("prior"); save();
+          const out = b.querySelector(".cgout");
+          try { const r = await api(`/api/wealth/cgt?proceeds=${c.proceeds}&cost=${c.cost}&prior_gains=${c.prior}`); out.innerHTML = `<div class="metrics">${cell("Gain", big(r.gain))}${cell("Taxable", big(r.taxable))}${cell("CGT @33%", big(r.cgt))}${cell("Net proceeds", big(r.net_proceeds))}</div>`; }
+          catch (e) { out.innerHTML = `<div class="err">${e.message}</div>`; }
+        };
+        b.querySelectorAll("input").forEach((i) => i.onkeydown = (e) => { if (e.key === "Enter") run(); });
+        b.querySelector(".calc").onclick = run; run();
+      }},
+      portfolio: { title: "My Portfolio (P&L)", cat: "My Money", w: 8, h: 8, render: async (sym, b, uid) => {
+        const inst = active().layout.find((w) => w.uid === uid) || {}; const c = inst.config = inst.config || {}; c.holdings = c.holdings || [];
+        b.innerHTML = `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:end;margin-bottom:10px;">
+          <label class="mm-lb" style="margin:0;">Ticker<input class="mm-in ph" data-k="ticker" style="width:90px;text-transform:uppercase;" /></label>
+          <label class="mm-lb" style="margin:0;">Qty<input class="mm-in ph" data-k="qty" style="width:80px;" /></label>
+          <label class="mm-lb" style="margin:0;">Avg cost<input class="mm-in ph" data-k="cost" style="width:90px;" /></label>
+          <button class="btn add">Add</button><button class="btn secondary refresh">↻ Prices</button></div><div class="poot"><div class="loading">Add a holding to begin.</div></div>`;
+        const addH = () => { const t = b.querySelector('[data-k="ticker"]').value.trim().toUpperCase(), q = parseFloat(b.querySelector('[data-k="qty"]').value), co = parseFloat(b.querySelector('[data-k="cost"]').value); if (!t || !q || !co) return; c.holdings.push({ ticker: t, qty: q, cost: co }); save(); WIDGETS.portfolio.render(sym, b, uid); };
+        b.querySelector(".add").onclick = addH;
+        b.querySelectorAll(".ph").forEach((i) => i.onkeydown = (e) => { if (e.key === "Enter") addH(); });
+        const out = b.querySelector(".poot");
+        if (!c.holdings.length) return;
+        out.innerHTML = `<div class="skel" style="height:60px;width:100%;"></div>`;
+        b.querySelector(".refresh").onclick = () => WIDGETS.portfolio.render(sym, b, uid);
+        try {
+          const syms = [...new Set(c.holdings.map((h) => h.ticker))];
+          const quotes = {}; rows(await api(`/api/quotes?symbols=${syms.join(",")}`)).forEach((q) => quotes[q.symbol] = q.last_price);
+          let totV = 0, totC = 0;
+          const body = c.holdings.map((h, i) => {
+            const px = quotes[h.ticker], val = px != null ? px * h.qty : null, cost = h.cost * h.qty, pnl = val != null ? val - cost : null, pct = pnl != null && cost ? pnl / cost * 100 : null;
+            if (val != null) { totV += val; totC += cost; }
+            return `<tr><td><b>${h.ticker}</b></td><td>${num(h.qty, 0)}</td><td>$${num(h.cost)}</td><td>$${num(px)}</td><td>$${num(val)}</td><td style="color:${(pnl ?? 0) >= 0 ? "var(--green)" : "var(--red)"}">${pnl != null ? (pnl >= 0 ? "+" : "") + num(pnl) + " (" + num(pct) + "%)" : "—"}</td><td><button class="btn secondary del" data-i="${i}" style="font-size:11px;padding:2px 7px;">✕</button></td></tr>`;
+          }).join("");
+          const tp = totV - totC;
+          out.innerHTML = `<div class="metrics" style="margin-bottom:10px;">${cell("Market value", "$" + num(totV, 0))}${cell("Cost basis", "$" + num(totC, 0))}${cell("Unrealised P&L", (tp >= 0 ? "+$" : "-$") + num(Math.abs(tp), 0) + " (" + num(totC ? tp / totC * 100 : 0) + "%)")}</div>
+            <div class="table-wrap"><table><thead><tr><th>Ticker</th><th>Qty</th><th>Avg</th><th>Price</th><th>Value</th><th>P&L</th><th></th></tr></thead><tbody>${body}</tbody></table></div>`;
+          out.querySelectorAll(".del").forEach((d) => d.onclick = () => { c.holdings.splice(+d.dataset.i, 1); save(); WIDGETS.portfolio.render(sym, b, uid); });
+        } catch (e) { out.innerHTML = `<div class="err">${e.message}</div>`; }
+      }},
+      pension_upload: { title: "Pension Statement Analyser", cat: "My Money", w: 8, h: 11, render: async (sym, b, uid) => {
+        // Upload a pension statement (PDF/Excel/CSV) -> classified holdings + Irish SFT/fee/peer analysis.
+        const dropHtml = `<div style="margin-bottom:10px;">
+            <label class="mm-lb" style="margin:0;">Upload pension statement — PDF, Excel (.xlsx) or CSV
+              <input type="file" class="pf-in" accept=".pdf,.xlsx,.xls,.xlsm,.csv" style="margin-top:6px;display:block;font-size:12px;color:var(--muted);" /></label>
+            <div style="font-size:11px;color:var(--muted);margin-top:6px;">Parsed locally — classifies each fund, checks fees, benchmarks vs Irish peers &amp; the SFT.</div></div>`;
+        b.innerHTML = dropHtml + `<div class="puo"></div>`;
+        const out = b.querySelector(".puo");
+        b.querySelector(".pf-in").onchange = async (e) => {
+          const file = e.target.files[0]; if (!file) return;
+          out.innerHTML = `<div class="skel" style="height:80px;width:100%;"></div>`;
+          try {
+            const r = await postFile("/api/pension/upload", file);
+            const cur = r.currency || "EUR";
+            const holds = r.holdings || [];
+            const hVal = (h) => h.value_eur ?? h.value;
+            const hAlloc = (h) => h.allocation ?? h.pct;
+            // Normalise assetClasses: PDF path gives €amounts, Excel/CSV gives %.
+            const ac = r.assetClasses || {}; const acSum = Object.values(ac).reduce((a, v) => a + (v || 0), 0);
+            const asPct = acSum > 90 && acSum < 110; // already percentages
+            const classRow = Object.entries(ac).sort((a, b) => b[1] - a[1])
+              .map(([k, v]) => cell(k, (asPct ? v : (acSum ? v / acSum * 100 : 0)).toFixed(0) + "%")).join("");
+            const recs = r.recommendations || [];
+            const recTone = (x) => x.type === "warning" ? "⚠️" : x.type === "success" ? "✅" : x.priority === "high" ? "🔴" : x.priority === "medium" ? "🟡" : "ℹ️";
+            const recHtml = recs.map((x) => `<div class="news-item" style="font-size:13px;"><b>${recTone(x)} ${x.title || ""}</b><div class="meta">${x.body || x.detail || ""}</div></div>`).join("");
+            const warnHtml = (r.warnings || []).map((w) => `<div class="news-item" style="font-size:13px;">${w.level === "warn" ? "⚠️" : "ℹ️"} ${w.text}</div>`).join("");
+            const posHtml = (r.positives || []).map((p) => `<div class="news-item" style="font-size:13px;">✅ ${p}</div>`).join("");
+            const holdRows = holds.sort((a, b) => (hVal(b) || 0) - (hVal(a) || 0)).map((h) =>
+              `<tr><td><b>${(h.name || "").slice(0, 40)}</b></td><td>${h.fundType || h.category || "—"}</td><td>${money(hVal(h), cur)}</td><td>${hAlloc(h) != null ? Number(hAlloc(h)).toFixed(1) + "%" : "—"}</td><td>${h.riskLabel || "—"}</td><td><span class="chg ${h.rec === "hold" ? "up" : h.rec === "reduce" ? "down" : ""}">${h.rec || "—"}</span></td></tr>`).join("");
+            out.innerHTML = `
+              <div class="metrics" style="margin-bottom:10px;">
+                ${cell("Total value", money(r.totalValue, cur))}
+                ${cell("Holdings", holds.length)}
+                ${r.avgTer != null ? cell("Avg fee", r.avgTer.toFixed(2) + "%") : ""}
+                ${r.peerLabel ? cell("Peer rank", r.peerLabel.replace(" of Irish pension savers", "")) : ""}
+                ${r.proj10yr ? cell("Proj. 10yr @7%", money(r.proj10yr, "EUR")) : ""}
+                ${r.provider ? cell("Provider", r.provider) : ""}
+              </div>
+              ${classRow ? `<div class="wh-title" style="margin:12px 0 6px;">Asset allocation</div><div class="metrics">${classRow}</div>` : ""}
+              <div class="wh-title" style="margin:14px 0 6px;">Holdings</div>
+              <div class="table-wrap"><table><thead><tr><th>Fund</th><th>Type</th><th>Value</th><th>Alloc</th><th>Risk</th><th>Rec</th></tr></thead><tbody>${holdRows}</tbody></table></div>
+              ${recHtml ? `<div class="wh-title" style="margin:14px 0 6px;">Recommendations</div>${recHtml}` : ""}
+              ${warnHtml ? `<div class="wh-title" style="margin:14px 0 6px;">Watch-outs</div>${warnHtml}` : ""}
+              ${posHtml ? `<div class="wh-title" style="margin:14px 0 6px;">Positives</div>${posHtml}` : ""}`;
+            // Feed the projector + news radar with these holdings.
+            saveWealthHoldings("pension", { holdings: holds, totalValue: r.totalValue, currency: cur });
+          } catch (err) { out.innerHTML = `<div class="err">${err.message}</div>`; }
+        };
+      }},
+      investments_upload: { title: "Investment / KKR Statement Analyser", cat: "My Money", w: 8, h: 11, render: async (sym, b, uid) => {
+        // Upload an investment or KKR portfolio statement -> holdings, P&L, Irish-tax commentary.
+        b.innerHTML = `<div style="margin-bottom:10px;">
+            <label class="mm-lb" style="margin:0;">Upload investment / KKR statement — PDF, Excel (.xlsx) or CSV
+              <input type="file" class="if-in" accept=".pdf,.xlsx,.xls,.xlsm,.csv" style="margin-top:6px;display:block;font-size:12px;color:var(--muted);" /></label>
+            <div style="font-size:11px;color:var(--muted);margin-top:6px;">Detects the KKR Investor Portal format; classifies holdings and writes Irish CGT / FX commentary.</div></div><div class="iuo"></div>`;
+        const out = b.querySelector(".iuo");
+        b.querySelector(".if-in").onchange = async (e) => {
+          const file = e.target.files[0]; if (!file) return;
+          out.innerHTML = `<div class="skel" style="height:80px;width:100%;"></div>`;
+          try {
+            const r = await postFile("/api/investments/upload", file);
+            const cur = r.currency || "EUR";
+            const holds = (r.holdings || []).slice().sort((a, b) => (b.value || 0) - (a.value || 0));
+            const ac = r.assetClasses || {};
+            const classRow = Object.entries(ac).sort((a, b) => b[1] - a[1]).map(([k, v]) => cell(k, Number(v).toFixed(0) + "%")).join("");
+            const holdRows = holds.map((h) => {
+              const g = h.gainPct;
+              return `<tr><td><b>${(h.name || "").slice(0, 38)}</b></td><td>${h.category || "—"}</td><td>${money(h.value, cur)}</td><td>${h.pct != null ? h.pct.toFixed(1) + "%" : "—"}</td><td style="color:${g == null ? "var(--muted)" : g >= 0 ? "var(--green)" : "var(--red)"}">${g == null ? "—" : (g >= 0 ? "+" : "") + g + "%"}</td></tr>`;
+            }).join("");
+            const badge = { kkr_report: "KKR Investor Portal", quarterly_report: "Quarterly report", holdings_statement: "Holdings statement" }[r.docType] || "Statement";
+            const sectHtml = (r.sections || []).map((s) => `<div style="margin-bottom:12px;"><div class="wh-title" style="margin-bottom:4px;">${s.title}</div><div style="font-size:13px;color:var(--text);line-height:1.5;">${s.body}</div></div>`).join("");
+            const warnHtml = (r.warnings || []).map((w) => `<div class="news-item" style="font-size:13px;">${w.level === "warn" ? "⚠️" : "ℹ️"} ${w.text}</div>`).join("");
+            const posHtml = (r.positives || []).map((p) => `<div class="news-item" style="font-size:13px;">✅ ${p}</div>`).join("");
+            out.innerHTML = `
+              <div class="metrics" style="margin-bottom:10px;">
+                ${cell("Total value", money(r.totalValue, cur))}
+                ${cell("Holdings", holds.length)}
+                ${cell("Format", badge)}
+                ${r.reportDate ? cell("As at", r.reportDate) : ""}
+              </div>
+              ${classRow ? `<div class="wh-title" style="margin:12px 0 6px;">Asset allocation</div><div class="metrics">${classRow}</div>` : ""}
+              <div class="wh-title" style="margin:14px 0 6px;">Holdings</div>
+              <div class="table-wrap"><table><thead><tr><th>Holding</th><th>Category</th><th>Value</th><th>Weight</th><th>Gain</th></tr></thead><tbody>${holdRows}</tbody></table></div>
+              ${warnHtml ? `<div class="wh-title" style="margin:14px 0 6px;">Watch-outs</div>${warnHtml}` : ""}
+              ${sectHtml ? `<div class="wh-title" style="margin:14px 0 8px;">Analysis</div>${sectHtml}` : ""}
+              ${posHtml ? `<div class="wh-title" style="margin:14px 0 6px;">Positives</div>${posHtml}` : ""}`;
+            saveWealthHoldings("investments", { holdings: holds, totalValue: r.totalValue, currency: cur });
+          } catch (err) { out.innerHTML = `<div class="err">${err.message}</div>`; }
+        };
+      }},
+      radar: { title: "Portfolio News Radar", cat: "My Money", w: 8, h: 11, render: async (sym, b, uid) => {
+        // Aggregates news across all uploaded pension + investment holdings.
+        if (!wealthSyncWired.has("radar-" + uid)) { wealthSyncWired.add("radar-" + uid); window.addEventListener("wealth-holdings-updated", () => { const body = document.querySelector(`[gs-id="${uid}"] .wb`); if (body) WIDGETS.radar.render(sym, body, uid); }); }
+        const store = wealthStore();
+        const merged = [...((store.pension || {}).holdings || []), ...((store.investments || {}).holdings || [])];
+        const upd = Math.max((store.pension || {}).updated || 0, (store.investments || {}).updated || 0);
+        b.innerHTML = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
+            <button class="btn refresh">↻ Scan my holdings</button>
+            <span style="font-size:11px;color:var(--muted);">${merged.length ? merged.length + " holdings from your statements" + (upd ? " · updated " + new Date(upd).toLocaleDateString() : "") : "No holdings yet — upload a pension or investment statement first."}</span>
+          </div><div class="rout"></div>`;
+        const out = b.querySelector(".rout");
+        const GROUPS = [["kkr_watch", "🎯 KKR Exit & Sale Watch"], ["performance", "📈 Performance & Companies"], ["markets", "🌍 Markets & Note Underlyings"], ["funds", "🏦 Funds & Managers"]];
+        const scan = async () => {
+          if (!merged.length) { out.innerHTML = `<div class="loading">Add the Pension or Investment analyser widget and upload a statement — your holdings save automatically and appear here.</div>`; return; }
+          out.innerHTML = `<div class="skel" style="height:100px;width:100%;"></div>`;
+          try {
+            const r = await post(`/api/wealth/holdings-news`, { holdings: merged });
+            const g = r.groups || {};
+            const pubOf = (it) => { const t = it.source && !/google news/i.test(it.source) ? it.source : (it.title || "").split(" - ").pop(); return t && t !== it.title ? t : (it.holding || ""); };
+            let html = "";
+            for (const [key, label] of GROUPS) {
+              const items = g[key] || []; if (!items.length) continue;
+              html += `<div class="wh-title" style="margin:12px 0 6px;">${label} <span style="color:var(--muted);font-weight:400;">(${items.length})</span></div>` +
+                items.slice(0, 12).map((it) => `<div class="news-item" style="font-size:13px;"><a href="${it.link || "#"}" target="_blank" rel="noopener">${it.title || ""}</a><div class="meta">${pubOf(it)}${it.date ? " · " + new Date(it.date).toLocaleDateString() : ""} · <span style="color:var(--accent);">${it.holding || ""}</span></div></div>`).join("");
+            }
+            out.innerHTML = html || `<div class="loading">No recent news found for your holdings. Try again later.</div>`;
+          } catch (e) { out.innerHTML = `<div class="err">${e.message}</div>`; }
+        };
+        b.querySelector(".refresh").onclick = scan;
+        if (merged.length) scan();
+      }},
     };
-    const CATS = ["Price", "Analyst Estimates", "Asset Overview", "Comparison", "Fundamental Analysis", "Options", "News", "Utils"];
+    const CATS = ["Price", "Analyst Estimates", "Asset Overview", "Comparison", "Fundamental Analysis", "Options", "My Money", "News", "Utils"];
     const DEFAULT_LAYOUT = () => ([
       { uid: uid(), type: "quote", x: 0, y: 0, w: 4, h: 5 }, { uid: uid(), type: "chart", x: 4, y: 0, w: 8, h: 5 },
       { uid: uid(), type: "metrics", x: 0, y: 5, w: 4, h: 4 }, { uid: uid(), type: "news", x: 8, y: 5, w: 4, h: 6 },
@@ -379,20 +593,38 @@
     grid.on("change", persistLayout);
     grid.on("resizestop", (e, el) => { const u = el.getAttribute("gs-id"); if (charts[u]) charts[u].resize(); });
 
+    const SYMBOL_CATS = ["Price", "Analyst Estimates", "Asset Overview", "Comparison", "Fundamental Analysis", "Options"];
+    const skel = `<div class="skel" style="height:70px;width:100%;"></div>`;
     function makeItem(inst) {
       const w = WIDGETS[inst.type]; const el = document.createElement("div"); el.className = "grid-stack-item"; el.setAttribute("gs-id", inst.uid); el.setAttribute("gs-w", inst.w || w.w); el.setAttribute("gs-h", inst.h || w.h); if (inst.x != null) el.setAttribute("gs-x", inst.x); if (inst.y != null) el.setAttribute("gs-y", inst.y);
-      el.innerHTML = `<div class="grid-stack-item-content"><div class="widget"><div class="wh"><span class="wh-title">${w.title}</span><button class="wh-x" title="Remove">✕</button></div><div class="wb"><div class="loading">Loading…</div></div></div></div>`;
-      el.querySelector(".wh-x").onclick = () => removeWidget(inst.uid, el); return el;
+      const symBased = SYMBOL_CATS.includes(w.cat);
+      const symCtrl = symBased ? `<span class="wh-sym" data-symlabel>${inst.symbol || active().symbol}</span><button class="wh-gear" title="Set this widget's ticker">⚙</button>` : "";
+      el.innerHTML = `<div class="grid-stack-item-content"><div class="widget"><div class="wh"><span class="wh-title">${w.title}</span>${symCtrl}<button class="wh-x" title="Remove">✕</button></div><div class="wb">${skel}</div></div></div>`;
+      el.querySelector(".wh-x").onclick = () => removeWidget(inst.uid, el);
+      if (symBased) el.querySelector(".wh-gear").onclick = () => {
+        const v = (prompt("Ticker for this widget (blank = follow dashboard):", inst.symbol || "") || "").trim().toUpperCase();
+        inst.symbol = v || undefined; persistLayout(); el.querySelector("[data-symlabel]").textContent = inst.symbol || active().symbol; el.querySelector(".wb").innerHTML = skel; fill(el, inst);
+      };
+      return el;
     }
-    async function fill(el, inst) { const body = el.querySelector(".wb"); try { await WIDGETS[inst.type].render(active().symbol, body, inst.uid); } catch (e) { body.innerHTML = `<div class="err">Error: ${e.message}</div>`; } }
+    async function fill(el, inst) { const body = el.querySelector(".wb"); const s = inst.symbol || active().symbol; try { await WIDGETS[inst.type].render(s, body, inst.uid); } catch (e) { body.innerHTML = `<div class="err">Error: ${e.message}</div>`; } }
     function renderGrid() { grid.removeAll(); Object.keys(charts).forEach((k) => { charts[k]?.destroy(); delete charts[k]; }); for (const inst of active().layout) { const el = makeItem(inst); grid.el.appendChild(el); grid.makeWidget(el); fill(el, inst); } }
-    function persistLayout() { const nodes = grid.save(false); const d = active(); const typeByUid = Object.fromEntries(d.layout.map((w) => [w.uid, w.type])); const cfgByUid = Object.fromEntries(d.layout.map((w) => [w.uid, w.config])); d.layout = nodes.map((n) => ({ uid: String(n.id), type: typeByUid[String(n.id)], x: n.x, y: n.y, w: n.w, h: n.h, config: cfgByUid[String(n.id)] })).filter((w) => w.type); save(); }
+    function persistLayout() { const nodes = grid.save(false); const d = active(); const typeByUid = Object.fromEntries(d.layout.map((w) => [w.uid, w.type])); const cfgByUid = Object.fromEntries(d.layout.map((w) => [w.uid, w.config])); const symByUid = Object.fromEntries(d.layout.map((w) => [w.uid, w.symbol])); d.layout = nodes.map((n) => ({ uid: String(n.id), type: typeByUid[String(n.id)], x: n.x, y: n.y, w: n.w, h: n.h, config: cfgByUid[String(n.id)], symbol: symByUid[String(n.id)] })).filter((w) => w.type); save(); }
 
     // ---------- widget actions ----------
-    function addWidgetInstance(type) { const w = WIDGETS[type]; const inst = { uid: uid(), type, w: w.w, h: w.h }; const el = makeItem(inst); grid.el.appendChild(el); grid.makeWidget(el); active().layout.push(inst); fill(el, inst); }
+    // These My Money widgets are statement-driven and meant to be unique — adding
+    // one that already exists just scrolls to it rather than creating a duplicate.
+    const SINGLETON = new Set(["projector", "cgt", "portfolio", "pension_upload", "investments_upload", "radar"]);
+    function addWidgetInstance(type) {
+      if (SINGLETON.has(type)) {
+        const existing = active().layout.find((w) => w.type === type);
+        if (existing) { const el = grid.el.querySelector(`[gs-id="${existing.uid}"]`); if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); el.style.transition = "outline .3s"; el.style.outline = "2px solid var(--accent)"; setTimeout(() => el.style.outline = "", 1200); } return; }
+      }
+      const w = WIDGETS[type]; const inst = { uid: uid(), type, w: w.w, h: w.h }; const el = makeItem(inst); grid.el.appendChild(el); grid.makeWidget(el); active().layout.push(inst); fill(el, inst);
+    }
     function removeWidget(u, el) { grid.removeWidget(el); if (charts[u]) { charts[u].destroy(); delete charts[u]; } active().layout = active().layout.filter((w) => w.uid !== u); save(); }
     function setSymbol() { const v = document.getElementById("ticker").value.trim().toUpperCase(); if (!v) return; active().symbol = v; save(); renderSidebar(); renderTitle(); refreshData(); }
-    function refreshData() { for (const inst of active().layout) { const el = grid.el.querySelector(`[gs-id="${inst.uid}"]`); if (el) { el.querySelector(".wb").innerHTML = `<div class="loading">Loading…</div>`; fill(el, inst); } } }
+    function refreshData() { for (const inst of active().layout) { const el = grid.el.querySelector(`[gs-id="${inst.uid}"]`); if (el) { const lbl = el.querySelector("[data-symlabel]"); if (lbl && !inst.symbol) lbl.textContent = active().symbol; el.querySelector(".wb").innerHTML = skel; fill(el, inst); } } }
 
     // ---------- ticker autocomplete ----------
     let acTimer = null, acItems = [], acActive = -1;

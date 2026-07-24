@@ -18,15 +18,28 @@ Run:  uvicorn app:app --port 5000     (or just `python app.py`)
 import email.utils
 import os
 import re
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
 
 import requests
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, File, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
+import wealth  # statement upload & analysis engine (Phase 2)
+
+try:  # load webapp/.env so secrets (e.g. ANTHROPIC_API_KEY) stay out of the repo
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+except Exception:
+    pass
+
 app = FastAPI(title="My OpenBB Dashboard")
+
+# Optional keys (read from webapp/.env or the environment; never hardcoded)
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")  # for AI-written advice
+FMP_CONFIGURED = None  # FMP key lives in OpenBB's user_settings.json, not here
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -343,6 +356,320 @@ def search(q: str = Query(..., min_length=1, description="Ticker or company name
             "exchange": x.get("exchDisp"),
         })
     return JSONResponse({"results": out}, status_code=200)
+
+
+# ---- My Money: Irish tax-aware wealth engine (ported from the KKR Tracker) ---
+@app.post("/api/wealth/projector")
+async def wealth_projector(request: Request):
+    """Irish retirement/SFT/CET projector + financial health score.
+    Ported from the KKR Tracker's _generate_financial_advice."""
+    p = await request.json()
+
+    def f(key, default=0.0):
+        try:
+            return float(p.get(key) or default)
+        except (TypeError, ValueError):
+            return float(default)
+
+    fx = f("fx_rate", 0.92)
+    kkr_eur = f("kkr_total_usd") * fx
+    pension = f("pension_pot")
+    age = int(f("age", 43))
+    income = f("annual_income")
+    monthly = f("monthly_contrib")      # employee €/month payslip deduction
+    lump = f("annual_lump")
+    employer_pension = f("employer_pension")
+    cash_bonus = f("cash_bonus")
+    unvested_eq_usd = f("unvested_equity_usd")
+    ret_age = int(f("ret_age", 65))
+
+    employee_contrib = monthly * 12 + lump
+    annual_contrib = employee_contrib + employer_pension
+    net_bonus = cash_bonus * 0.52
+    unvested_eq_eur = unvested_eq_usd * fx
+    kkr_concentration = kkr_eur + unvested_eq_eur
+    combined = pension + kkr_eur
+    years_to_ret = max(0, ret_age - age)
+    years_to_65 = max(0, 65 - age)
+    years_to_60 = max(0, 60 - age)
+
+    PENSION_GROWTH, KKR_GROWTH = 0.07, 0.12
+
+    def fv(pv, contrib_pa, r, n):
+        return pv * (1 + r) ** n + contrib_pa * ((1 + r) ** n - 1) / r if r else pv + contrib_pa * n
+
+    proj_pension_ret = fv(pension, annual_contrib, PENSION_GROWTH, years_to_ret)
+    proj_pension_65 = fv(pension, annual_contrib, PENSION_GROWTH, years_to_65)
+    proj_pension_60 = fv(pension, annual_contrib, PENSION_GROWTH, years_to_60)
+    proj_kkr_ret = kkr_eur * (1 + KKR_GROWTH) ** years_to_ret
+    proj_kkr_65 = kkr_eur * (1 + KKR_GROWTH) ** years_to_65
+    proj_total_ret = proj_pension_ret + proj_kkr_ret
+    proj_total_65 = proj_pension_65 + proj_kkr_65
+
+    SFT_SCHEDULE = {2024: 2_000_000, 2025: 2_150_000, 2026: 2_200_000, 2027: 2_400_000, 2028: 2_600_000}
+    SFT_MAX = 2_800_000
+
+    def sft_at_age(target_age):
+        return SFT_SCHEDULE.get(2024 + max(0, target_age - age), SFT_MAX)
+
+    sft_ret, sft_65 = sft_at_age(ret_age), sft_at_age(65)
+    sft_excess_ret = max(0, proj_pension_ret - sft_ret)
+    sft_excess_65 = max(0, proj_pension_65 - sft_65)
+    cet_liability_ret = sft_excess_ret * 0.40
+    cet_liability_65 = sft_excess_65 * 0.40
+    sft_headroom_ret = sft_ret - proj_pension_ret
+    sft_near_miss = sft_excess_ret == 0 and sft_headroom_ret < sft_ret * 0.10
+
+    STATE_PENSION = 14_412
+    gross_income_ret = proj_total_ret * 0.04 + STATE_PENSION
+    gross_income_65 = proj_total_65 * 0.04 + STATE_PENSION
+
+    MEDIAN_PENSION, TOP10_PENSION, TOP5_PENSION, TOP1_PENSION = 55_000, 180_000, 280_000, 500_000
+    MEDIAN_WEALTH, TOP10_WEALTH, TOP5_WEALTH = 230_000, 650_000, 950_000
+
+    def peer_pct(val, p50, p90, p95):
+        if val >= p95:
+            return "top 5%"
+        if val >= p90:
+            return "top 10%"
+        if val >= p50 * 2:
+            return "top 20%"
+        if val >= p50:
+            return "above median"
+        return "below median"
+
+    pension_peer = peer_pct(pension, MEDIAN_PENSION, TOP10_PENSION, TOP5_PENSION)
+    wealth_peer = peer_pct(combined, MEDIAN_WEALTH, TOP10_WEALTH, TOP5_WEALTH)
+    savings_rate = (annual_contrib / income * 100) if income else 0
+
+    score = 50
+    score += 20 if pension >= TOP1_PENSION else 15 if pension >= TOP5_PENSION else 10 if pension >= TOP10_PENSION else 0
+    score += 10 if kkr_eur >= 200_000 else 5 if kkr_eur >= 100_000 else 0
+    score += 10 if savings_rate >= 20 else 5 if savings_rate >= 10 else 0
+    if sft_excess_65 > 0:
+        score -= 5
+    if annual_contrib == 0:
+        score -= 10
+    score = max(0, min(100, score))
+    grade = "A+" if score >= 90 else "A" if score >= 80 else "B+" if score >= 70 else "B" if score >= 60 else "C"
+
+    def fmt(n):
+        return f"€{n:,.0f}"
+
+    EARNINGS_CAP = 115_000
+    relief_pct = 15 if age < 30 else 20 if age < 40 else 25 if age < 50 else 30 if age < 55 else 35 if age < 60 else 40
+    max_ee_relief = EARNINGS_CAP * relief_pct / 100
+    unused_relief = max(0, max_ee_relief - employee_contrib)
+    unused_relief_tax_saving = unused_relief * 0.40
+
+    sft_breach_age = None
+    if pension > 0:
+        for yr in range(1, years_to_65 + 1):
+            if fv(pension, annual_contrib, PENSION_GROWTH, yr) > sft_at_age(age + yr):
+                sft_breach_age = age + yr
+                break
+
+    def sft_safe_contrib(rage):
+        n = max(1, rage - age)
+        target = sft_at_age(rage)
+        organic = pension * (1 + PENSION_GROWTH) ** n
+        if organic >= target:
+            return 0
+        return (target - organic) / (((1 + PENSION_GROWTH) ** n - 1) / PENSION_GROWTH)
+
+    safe_contrib_ret = sft_safe_contrib(ret_age)
+    surplus_ret = max(0, annual_contrib - safe_contrib_ret)
+    ee_safe = max(0, safe_contrib_ret - employer_pension)
+
+    risks = []
+    if sft_excess_ret > 0:
+        risks.append(f"SFT breach at age {ret_age} — pension projected at {fmt(proj_pension_ret)} vs SFT of {fmt(sft_ret)}. Potential CET liability of {fmt(cet_liability_ret)} at 40%.")
+    elif sft_near_miss:
+        risks.append(f"SFT near-miss at age {ret_age} — projected {fmt(proj_pension_ret)} vs SFT {fmt(sft_ret)} (headroom {fmt(sft_headroom_ret)}). Higher growth or employer top-ups tip this into a breach.")
+    if kkr_concentration > 200_000:
+        risks.append(f"KKR concentration: career income + {fmt(unvested_eq_eur)} unvested equity + {fmt(kkr_eur)} personal portfolio all tied to KKR — a firm-level event hits salary, equity and investments together.")
+    if kkr_eur > 0:
+        risks.append(f"Personal KKR portfolio is USD-denominated. A 10% EUR/USD move = {fmt(kkr_eur * 0.10)} swing in EUR value.")
+    if unvested_eq_usd > 0:
+        risks.append(f"${unvested_eq_usd:,.0f} unvested KKR equity is taxed as income (PAYE+USC+PRSI ~52%) when it vests — plan cash for the tax bill.")
+
+    actions = []
+    if sft_breach_age:
+        actions.append(f"Pension on course to breach SFT at age {sft_breach_age}. To stay SFT-safe at {ret_age}, cap total contributions at {fmt(safe_contrib_ret)}/yr (your own at {fmt(ee_safe)}/yr).")
+    if unused_relief > 0:
+        actions.append(f"{fmt(unused_relief)}/yr of unused Revenue relief at {relief_pct}% — worth {fmt(unused_relief_tax_saving)} in tax, but only top up if it doesn't accelerate an SFT breach.")
+    if net_bonus > 0:
+        actions.append(f"Net bonus ~{fmt(net_bonus)}/yr: diversify away from KKR (non-Irish-domiciled index ETFs → 33% CGT vs 41% exit tax).")
+    actions.append("Hedge USD/EUR — KKR portfolio and unvested equity are USD-denominated; add EUR assets as a counterweight.")
+
+    return JSONResponse({
+        "score": score, "grade": grade, "combined_eur": round(combined),
+        "pension_eur": round(pension), "kkr_eur": round(kkr_eur),
+        "pension_peer": pension_peer, "wealth_peer": wealth_peer,
+        "savings_rate": round(savings_rate, 1), "ret_age": ret_age, "age": age,
+        "proj_pension_ret": round(proj_pension_ret), "proj_kkr_ret": round(proj_kkr_ret),
+        "proj_total_ret": round(proj_total_ret), "proj_income_ret": round(gross_income_ret),
+        "proj_pension_65": round(proj_pension_65), "proj_total_65": round(proj_total_65),
+        "sft_ret": round(sft_ret), "sft_excess_ret": round(sft_excess_ret),
+        "cet_liability_ret": round(cet_liability_ret), "cet_liability_65": round(cet_liability_65),
+        "annual_contrib": round(annual_contrib), "employee_contrib": round(employee_contrib),
+        "unused_relief": round(unused_relief), "sft_breach_age": sft_breach_age,
+        "safe_contrib_ret": round(safe_contrib_ret), "ee_safe_contrib": round(ee_safe),
+        "surplus_ret": round(surplus_ret), "net_bonus": round(net_bonus),
+        "state_pension": STATE_PENSION, "risks": risks, "actions": actions,
+    }, status_code=200)
+
+
+@app.get("/api/wealth/cgt")
+def wealth_cgt(proceeds: float = Query(...), cost: float = Query(...), prior_gains: float = Query(0)):
+    """Irish CGT: 33% on net gains above the €1,270 annual exemption."""
+    gain = proceeds - cost
+    exemption_left = max(0, 1270 - prior_gains)
+    taxable = max(0, gain - exemption_left)
+    tax = taxable * 0.33
+    return JSONResponse({
+        "gain": round(gain, 2), "exemption_used": round(min(max(0, gain), exemption_left), 2),
+        "taxable": round(taxable, 2), "cgt": round(tax, 2),
+        "net_proceeds": round(proceeds - cost - tax, 2), "rate": 0.33,
+    }, status_code=200)
+
+
+# ---- My Money: statement upload & analysis (Phase 2) ----------------------
+# Max upload size — pension/investment statements are small; reject anything
+# larger to avoid buffering huge files in memory.
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
+_ALLOWED_EXTS = {"pdf", "xlsx", "xls", "xlsm", "csv"}
+
+
+async def _read_upload(file: UploadFile):
+    """Read an UploadFile, enforcing extension + size. Returns (bytes, error_response)."""
+    name = file.filename or ""
+    ext = name.lower().rsplit(".", 1)[-1] if "." in name else ""
+    if ext not in _ALLOWED_EXTS:
+        return None, JSONResponse(
+            {"error": "Please upload a PDF, Excel (.xlsx/.xls) or CSV statement."},
+            status_code=400,
+        )
+    data = await file.read()
+    if not data:
+        return None, JSONResponse({"error": "The uploaded file is empty."}, status_code=400)
+    if len(data) > MAX_UPLOAD_BYTES:
+        return None, JSONResponse(
+            {"error": f"File too large (max {MAX_UPLOAD_BYTES // (1024*1024)} MB)."},
+            status_code=413,
+        )
+    return data, None
+
+
+@app.post("/api/pension/upload")
+async def pension_upload(file: UploadFile = File(...)):
+    """Parse a pension statement (PDF/Excel/CSV) -> classified holdings + Irish analysis."""
+    data, err = await _read_upload(file)
+    if err:
+        return err
+    try:
+        result = wealth.analyse_pension(data, file.filename)
+    except Exception as exc:
+        return JSONResponse(
+            {"error": f"Could not analyse this statement — {exc}"}, status_code=500
+        )
+    status = 422 if result.get("error") else 200
+    return JSONResponse(result, status_code=status)
+
+
+@app.post("/api/investments/upload")
+async def investments_upload(file: UploadFile = File(...)):
+    """Parse an investment / KKR portfolio statement -> holdings, P&L, commentary."""
+    data, err = await _read_upload(file)
+    if err:
+        return err
+    try:
+        result = wealth.analyse_investments(data, file.filename)
+    except Exception as exc:
+        return JSONResponse(
+            {"error": f"Could not analyse this statement — {exc}"}, status_code=500
+        )
+    # sectionsText is only needed internally (pension provider detection); drop
+    # the raw page text from the response sent to the browser to keep it lean.
+    result.pop("sectionsText", None)
+    status = 422 if result.get("error") else 200
+    return JSONResponse(result, status_code=status)
+
+
+# ---- My Money: Portfolio News Radar ---------------------------------------
+# Most holdings are private (KKR PE funds, structured notes, Davy funds), so news
+# comes from the *public* entity each maps to — the manager, the note's underlying
+# index, or a plain search. wealth.holdings_news_strategy builds the targets; here
+# we fetch them (OpenBB company news for tickers, Google-News RSS for queries).
+
+def _gnews_items(query: str, limit: int = 5):
+    """Fetch a Google-News RSS search (last 30 days) -> parsed feed items."""
+    url = ("https://news.google.com/rss/search?q="
+           + urllib.parse.quote(f"{query} when:30d")
+           + "&hl=en-US&gl=US&ceid=US:en")
+    try:
+        r = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0 (OpenBB personal dashboard)"})
+    except requests.exceptions.RequestException:
+        return []
+    if r.status_code != 200:
+        return []
+    _, items = _parse_feed(r.content)
+    return items[:limit]
+
+
+def _obb_news_items(symbol: str, limit: int = 6):
+    """Fetch OpenBB company news for a public ticker -> normalised feed items."""
+    try:
+        resp = requests.get(
+            f"{OPENBB_API_URL}/api/v1/news/company",
+            params={"provider": PROVIDER, "symbol": symbol.upper(), "limit": limit},
+            timeout=TIMEOUT,
+        )
+        results = resp.json().get("results") or []
+    except Exception:
+        return []
+    out = []
+    for a in results[:limit]:
+        src = a.get("source") or a.get("provider") or a.get("publisher") or ""
+        out.append({
+            "title": a.get("title"),
+            "link": a.get("url") or a.get("link"),
+            "date": a.get("date") or a.get("published") or a.get("published_date"),
+            "source": src if isinstance(src, str) else "",
+        })
+    return [x for x in out if x.get("title")]
+
+
+@app.post("/api/wealth/holdings-news")
+async def holdings_news(request: Request):
+    """Aggregate news across all pension + investment holdings, grouped by intent
+    (KKR exit/sale watch · performance · markets · funds)."""
+    body = await request.json()
+    holdings = body.get("holdings") or []
+    if not holdings:
+        return JSONResponse(
+            {"error": "No holdings yet — upload a pension or investment statement first (the analyser widgets save them here)."},
+            status_code=400,
+        )
+    targets = wealth.holdings_news_strategy(holdings)[:9]
+    groups = {"kkr_watch": [], "performance": [], "markets": [], "funds": []}
+    seen = set()
+    for t in targets:
+        items = _obb_news_items(t["value"]) if t["kind"] == "ticker" else _gnews_items(t["value"])
+        for it in items:
+            key = (it.get("title") or "").strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            it["holding"] = t["label"]
+            groups.setdefault(t["group"], []).append(it)
+    for items in groups.values():
+        items.sort(key=lambda x: _ts(_parse_date(x.get("date"))), reverse=True)
+    return JSONResponse({
+        "groups": groups,
+        "targets": [{"group": t["group"], "label": t["label"]} for t in targets],
+        "count": sum(len(v) for v in groups.values()),
+    }, status_code=200)
 
 
 @app.get("/api/health")
