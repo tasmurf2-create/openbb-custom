@@ -18,13 +18,16 @@ Run:  uvicorn app:app --port 5000     (or just `python app.py`)
 import email.utils
 import os
 import re
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
 
 import requests
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, File, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
+
+import wealth  # statement upload & analysis engine (Phase 2)
 
 try:  # load webapp/.env so secrets (e.g. ANTHROPIC_API_KEY) stay out of the repo
     from dotenv import load_dotenv
@@ -528,6 +531,144 @@ def wealth_cgt(proceeds: float = Query(...), cost: float = Query(...), prior_gai
         "gain": round(gain, 2), "exemption_used": round(min(max(0, gain), exemption_left), 2),
         "taxable": round(taxable, 2), "cgt": round(tax, 2),
         "net_proceeds": round(proceeds - cost - tax, 2), "rate": 0.33,
+    }, status_code=200)
+
+
+# ---- My Money: statement upload & analysis (Phase 2) ----------------------
+# Max upload size — pension/investment statements are small; reject anything
+# larger to avoid buffering huge files in memory.
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
+_ALLOWED_EXTS = {"pdf", "xlsx", "xls", "xlsm", "csv"}
+
+
+async def _read_upload(file: UploadFile):
+    """Read an UploadFile, enforcing extension + size. Returns (bytes, error_response)."""
+    name = file.filename or ""
+    ext = name.lower().rsplit(".", 1)[-1] if "." in name else ""
+    if ext not in _ALLOWED_EXTS:
+        return None, JSONResponse(
+            {"error": "Please upload a PDF, Excel (.xlsx/.xls) or CSV statement."},
+            status_code=400,
+        )
+    data = await file.read()
+    if not data:
+        return None, JSONResponse({"error": "The uploaded file is empty."}, status_code=400)
+    if len(data) > MAX_UPLOAD_BYTES:
+        return None, JSONResponse(
+            {"error": f"File too large (max {MAX_UPLOAD_BYTES // (1024*1024)} MB)."},
+            status_code=413,
+        )
+    return data, None
+
+
+@app.post("/api/pension/upload")
+async def pension_upload(file: UploadFile = File(...)):
+    """Parse a pension statement (PDF/Excel/CSV) -> classified holdings + Irish analysis."""
+    data, err = await _read_upload(file)
+    if err:
+        return err
+    try:
+        result = wealth.analyse_pension(data, file.filename)
+    except Exception as exc:
+        return JSONResponse(
+            {"error": f"Could not analyse this statement — {exc}"}, status_code=500
+        )
+    status = 422 if result.get("error") else 200
+    return JSONResponse(result, status_code=status)
+
+
+@app.post("/api/investments/upload")
+async def investments_upload(file: UploadFile = File(...)):
+    """Parse an investment / KKR portfolio statement -> holdings, P&L, commentary."""
+    data, err = await _read_upload(file)
+    if err:
+        return err
+    try:
+        result = wealth.analyse_investments(data, file.filename)
+    except Exception as exc:
+        return JSONResponse(
+            {"error": f"Could not analyse this statement — {exc}"}, status_code=500
+        )
+    # sectionsText is only needed internally (pension provider detection); drop
+    # the raw page text from the response sent to the browser to keep it lean.
+    result.pop("sectionsText", None)
+    status = 422 if result.get("error") else 200
+    return JSONResponse(result, status_code=status)
+
+
+# ---- My Money: Portfolio News Radar ---------------------------------------
+# Most holdings are private (KKR PE funds, structured notes, Davy funds), so news
+# comes from the *public* entity each maps to — the manager, the note's underlying
+# index, or a plain search. wealth.holdings_news_strategy builds the targets; here
+# we fetch them (OpenBB company news for tickers, Google-News RSS for queries).
+
+def _gnews_items(query: str, limit: int = 5):
+    """Fetch a Google-News RSS search (last 30 days) -> parsed feed items."""
+    url = ("https://news.google.com/rss/search?q="
+           + urllib.parse.quote(f"{query} when:30d")
+           + "&hl=en-US&gl=US&ceid=US:en")
+    try:
+        r = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0 (OpenBB personal dashboard)"})
+    except requests.exceptions.RequestException:
+        return []
+    if r.status_code != 200:
+        return []
+    _, items = _parse_feed(r.content)
+    return items[:limit]
+
+
+def _obb_news_items(symbol: str, limit: int = 6):
+    """Fetch OpenBB company news for a public ticker -> normalised feed items."""
+    try:
+        resp = requests.get(
+            f"{OPENBB_API_URL}/api/v1/news/company",
+            params={"provider": PROVIDER, "symbol": symbol.upper(), "limit": limit},
+            timeout=TIMEOUT,
+        )
+        results = resp.json().get("results") or []
+    except Exception:
+        return []
+    out = []
+    for a in results[:limit]:
+        src = a.get("source") or a.get("provider") or a.get("publisher") or ""
+        out.append({
+            "title": a.get("title"),
+            "link": a.get("url") or a.get("link"),
+            "date": a.get("date") or a.get("published") or a.get("published_date"),
+            "source": src if isinstance(src, str) else "",
+        })
+    return [x for x in out if x.get("title")]
+
+
+@app.post("/api/wealth/holdings-news")
+async def holdings_news(request: Request):
+    """Aggregate news across all pension + investment holdings, grouped by intent
+    (KKR exit/sale watch · performance · markets · funds)."""
+    body = await request.json()
+    holdings = body.get("holdings") or []
+    if not holdings:
+        return JSONResponse(
+            {"error": "No holdings yet — upload a pension or investment statement first (the analyser widgets save them here)."},
+            status_code=400,
+        )
+    targets = wealth.holdings_news_strategy(holdings)[:9]
+    groups = {"kkr_watch": [], "performance": [], "markets": [], "funds": []}
+    seen = set()
+    for t in targets:
+        items = _obb_news_items(t["value"]) if t["kind"] == "ticker" else _gnews_items(t["value"])
+        for it in items:
+            key = (it.get("title") or "").strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            it["holding"] = t["label"]
+            groups.setdefault(t["group"], []).append(it)
+    for items in groups.values():
+        items.sort(key=lambda x: _ts(_parse_date(x.get("date"))), reverse=True)
+    return JSONResponse({
+        "groups": groups,
+        "targets": [{"group": t["group"], "label": t["label"]} for t in targets],
+        "count": sum(len(v) for v in groups.values()),
     }, status_code=200)
 
 

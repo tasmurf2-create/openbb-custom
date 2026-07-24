@@ -190,6 +190,23 @@
     function big(n) { if (n == null || isNaN(n)) return "—"; const a = Math.abs(n); if (a >= 1e12) return "$" + (n / 1e12).toFixed(2) + "T"; if (a >= 1e9) return "$" + (n / 1e9).toFixed(2) + "B"; if (a >= 1e6) return "$" + (n / 1e6).toFixed(2) + "M"; return "$" + num(n, 0); }
     async function api(path) { const r = await fetch(path); const j = await r.json(); if (!r.ok) throw new Error(j.error || j.detail || ("HTTP " + r.status)); return j; }
     async function post(path, body) { const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); const j = await r.json(); if (!r.ok) throw new Error(j.error || j.detail || ("HTTP " + r.status)); return j; }
+    async function postFile(path, file) { const fd = new FormData(); fd.append("file", file); const r = await fetch(path, { method: "POST", body: fd }); const j = await r.json(); if (!r.ok) throw new Error(j.error || j.detail || ("HTTP " + r.status)); return j; }
+    // ---- My Wealth shared store: uploaded statements feed the projector + news radar ----
+    const WEALTH_KEY = "obb_wealth_holdings";
+    function wealthStore() { try { return JSON.parse(localStorage.getItem(WEALTH_KEY)) || {}; } catch { return {}; } }
+    function saveWealthHoldings(kind, result) {
+      const store = wealthStore();
+      store[kind] = {
+        holdings: (result.holdings || []).map((h) => ({ name: h.name, category: h.fundType || h.category, ticker: h.ticker })),
+        total: result.totalValue, currency: result.currency || "EUR", updated: Date.now(),
+      };
+      store.updated = Date.now();
+      localStorage.setItem(WEALTH_KEY, JSON.stringify(store));
+      window.dispatchEvent(new CustomEvent("wealth-holdings-updated"));
+    }
+    const wealthSyncWired = new Set();
+    const CURSYM = { EUR: "€", USD: "$", GBP: "£" };
+    const money = (n, c = "EUR") => n == null || isNaN(n) ? "—" : (CURSYM[c] || "€") + Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
     const first = (j) => (j.results || [])[0] || {}; const rows = (j) => j.results || [];
     const cell = (k, v) => `<div class="metric"><div class="k">${k}</div><div class="v">${v}</div></div>`;
     const chgHtml = (c) => { const up = (c ?? 0) >= 0; return `<span style="color:${up ? "var(--green)" : "var(--red)"}">${up ? "▲" : "▼"} ${num(c)}%</span>`; };
@@ -359,8 +376,16 @@
       }},
       projector: { title: "Retirement Projector (Irish)", cat: "My Money", w: 8, h: 11, render: async (sym, b, uid) => {
         const inst = active().layout.find((w) => w.uid === uid) || {}; const c = inst.config = inst.config || {};
+        // Sync the pension pot from the latest uploaded pension statement. Re-syncs
+        // once per new upload; manual edits between uploads are preserved.
+        const ps = wealthStore().pension;
+        if (ps && ps.total && c._pensionSyncTs !== ps.updated) { c.pension_pot = Math.round(ps.total); c._pensionSyncTs = ps.updated; save(); }
+        // Re-render this widget whenever a fresh statement is uploaded.
+        if (!wealthSyncWired.has(uid)) { wealthSyncWired.add(uid); window.addEventListener("wealth-holdings-updated", () => { const body = document.querySelector(`[gs-id="${uid}"] .wb`); if (body) WIDGETS.projector.render(sym, body, uid); }); }
         const F = [["pension_pot", "Pension pot €", 250000], ["age", "Age", 43], ["annual_income", "Salary €/yr", 150000], ["monthly_contrib", "Your contrib €/mo", 1500], ["employer_pension", "Employer €/yr", 20000], ["ret_age", "Retire age", 65], ["kkr_total_usd", "KKR portfolio $", 0], ["unvested_equity_usd", "Unvested equity $", 0], ["cash_bonus", "Cash bonus €", 0], ["fx_rate", "USD→EUR", 0.92]];
-        b.innerHTML = `<div class="mm-grid">${F.map(([k, l, def]) => `<label class="mm-lb" style="margin:0;">${l}<input class="mm-in" data-k="${k}" value="${c[k] ?? def}" /></label>`).join("")}</div><button class="btn calc">Calculate</button><div class="pout" style="margin-top:12px;"><div class="skel" style="height:80px;width:100%;"></div></div>`;
+        const syncNote = ps && ps.total ? `<div style="font-size:11px;color:var(--muted);margin-bottom:8px;">📄 Pension pot synced from your uploaded statement (${money(ps.total, ps.currency)}). Edit any field and press Calculate. <a href="#" class="resync" style="color:var(--accent);">Re-sync</a></div>` : "";
+        b.innerHTML = syncNote + `<div class="mm-grid">${F.map(([k, l, def]) => `<label class="mm-lb" style="margin:0;">${l}<input class="mm-in" data-k="${k}" value="${c[k] ?? def}" /></label>`).join("")}</div><button class="btn calc">Calculate</button><div class="pout" style="margin-top:12px;"><div class="skel" style="height:80px;width:100%;"></div></div>`;
+        const rs = b.querySelector(".resync"); if (rs) rs.onclick = (e) => { e.preventDefault(); c._pensionSyncTs = null; WIDGETS.projector.render(sym, b, uid); };
         const run = async () => {
           F.forEach(([k]) => c[k] = b.querySelector(`[data-k="${k}"]`).value); save();
           const out = b.querySelector(".pout"); out.innerHTML = `<div class="skel" style="height:80px;width:100%;"></div>`;
@@ -415,6 +440,127 @@
           out.querySelectorAll(".del").forEach((d) => d.onclick = () => { c.holdings.splice(+d.dataset.i, 1); save(); WIDGETS.portfolio.render(sym, b, uid); });
         } catch (e) { out.innerHTML = `<div class="err">${e.message}</div>`; }
       }},
+      pension_upload: { title: "Pension Statement Analyser", cat: "My Money", w: 8, h: 11, render: async (sym, b, uid) => {
+        // Upload a pension statement (PDF/Excel/CSV) -> classified holdings + Irish SFT/fee/peer analysis.
+        const dropHtml = `<div style="margin-bottom:10px;">
+            <label class="mm-lb" style="margin:0;">Upload pension statement — PDF, Excel (.xlsx) or CSV
+              <input type="file" class="pf-in" accept=".pdf,.xlsx,.xls,.xlsm,.csv" style="margin-top:6px;display:block;font-size:12px;color:var(--muted);" /></label>
+            <div style="font-size:11px;color:var(--muted);margin-top:6px;">Parsed locally — classifies each fund, checks fees, benchmarks vs Irish peers &amp; the SFT.</div></div>`;
+        b.innerHTML = dropHtml + `<div class="puo"></div>`;
+        const out = b.querySelector(".puo");
+        b.querySelector(".pf-in").onchange = async (e) => {
+          const file = e.target.files[0]; if (!file) return;
+          out.innerHTML = `<div class="skel" style="height:80px;width:100%;"></div>`;
+          try {
+            const r = await postFile("/api/pension/upload", file);
+            const cur = r.currency || "EUR";
+            const holds = r.holdings || [];
+            const hVal = (h) => h.value_eur ?? h.value;
+            const hAlloc = (h) => h.allocation ?? h.pct;
+            // Normalise assetClasses: PDF path gives €amounts, Excel/CSV gives %.
+            const ac = r.assetClasses || {}; const acSum = Object.values(ac).reduce((a, v) => a + (v || 0), 0);
+            const asPct = acSum > 90 && acSum < 110; // already percentages
+            const classRow = Object.entries(ac).sort((a, b) => b[1] - a[1])
+              .map(([k, v]) => cell(k, (asPct ? v : (acSum ? v / acSum * 100 : 0)).toFixed(0) + "%")).join("");
+            const recs = r.recommendations || [];
+            const recTone = (x) => x.type === "warning" ? "⚠️" : x.type === "success" ? "✅" : x.priority === "high" ? "🔴" : x.priority === "medium" ? "🟡" : "ℹ️";
+            const recHtml = recs.map((x) => `<div class="news-item" style="font-size:13px;"><b>${recTone(x)} ${x.title || ""}</b><div class="meta">${x.body || x.detail || ""}</div></div>`).join("");
+            const warnHtml = (r.warnings || []).map((w) => `<div class="news-item" style="font-size:13px;">${w.level === "warn" ? "⚠️" : "ℹ️"} ${w.text}</div>`).join("");
+            const posHtml = (r.positives || []).map((p) => `<div class="news-item" style="font-size:13px;">✅ ${p}</div>`).join("");
+            const holdRows = holds.sort((a, b) => (hVal(b) || 0) - (hVal(a) || 0)).map((h) =>
+              `<tr><td><b>${(h.name || "").slice(0, 40)}</b></td><td>${h.fundType || h.category || "—"}</td><td>${money(hVal(h), cur)}</td><td>${hAlloc(h) != null ? Number(hAlloc(h)).toFixed(1) + "%" : "—"}</td><td>${h.riskLabel || "—"}</td><td><span class="chg ${h.rec === "hold" ? "up" : h.rec === "reduce" ? "down" : ""}">${h.rec || "—"}</span></td></tr>`).join("");
+            out.innerHTML = `
+              <div class="metrics" style="margin-bottom:10px;">
+                ${cell("Total value", money(r.totalValue, cur))}
+                ${cell("Holdings", holds.length)}
+                ${r.avgTer != null ? cell("Avg fee", r.avgTer.toFixed(2) + "%") : ""}
+                ${r.peerLabel ? cell("Peer rank", r.peerLabel.replace(" of Irish pension savers", "")) : ""}
+                ${r.proj10yr ? cell("Proj. 10yr @7%", money(r.proj10yr, "EUR")) : ""}
+                ${r.provider ? cell("Provider", r.provider) : ""}
+              </div>
+              ${classRow ? `<div class="wh-title" style="margin:12px 0 6px;">Asset allocation</div><div class="metrics">${classRow}</div>` : ""}
+              <div class="wh-title" style="margin:14px 0 6px;">Holdings</div>
+              <div class="table-wrap"><table><thead><tr><th>Fund</th><th>Type</th><th>Value</th><th>Alloc</th><th>Risk</th><th>Rec</th></tr></thead><tbody>${holdRows}</tbody></table></div>
+              ${recHtml ? `<div class="wh-title" style="margin:14px 0 6px;">Recommendations</div>${recHtml}` : ""}
+              ${warnHtml ? `<div class="wh-title" style="margin:14px 0 6px;">Watch-outs</div>${warnHtml}` : ""}
+              ${posHtml ? `<div class="wh-title" style="margin:14px 0 6px;">Positives</div>${posHtml}` : ""}`;
+            // Feed the projector + news radar with these holdings.
+            saveWealthHoldings("pension", { holdings: holds, totalValue: r.totalValue, currency: cur });
+          } catch (err) { out.innerHTML = `<div class="err">${err.message}</div>`; }
+        };
+      }},
+      investments_upload: { title: "Investment / KKR Statement Analyser", cat: "My Money", w: 8, h: 11, render: async (sym, b, uid) => {
+        // Upload an investment or KKR portfolio statement -> holdings, P&L, Irish-tax commentary.
+        b.innerHTML = `<div style="margin-bottom:10px;">
+            <label class="mm-lb" style="margin:0;">Upload investment / KKR statement — PDF, Excel (.xlsx) or CSV
+              <input type="file" class="if-in" accept=".pdf,.xlsx,.xls,.xlsm,.csv" style="margin-top:6px;display:block;font-size:12px;color:var(--muted);" /></label>
+            <div style="font-size:11px;color:var(--muted);margin-top:6px;">Detects the KKR Investor Portal format; classifies holdings and writes Irish CGT / FX commentary.</div></div><div class="iuo"></div>`;
+        const out = b.querySelector(".iuo");
+        b.querySelector(".if-in").onchange = async (e) => {
+          const file = e.target.files[0]; if (!file) return;
+          out.innerHTML = `<div class="skel" style="height:80px;width:100%;"></div>`;
+          try {
+            const r = await postFile("/api/investments/upload", file);
+            const cur = r.currency || "EUR";
+            const holds = (r.holdings || []).slice().sort((a, b) => (b.value || 0) - (a.value || 0));
+            const ac = r.assetClasses || {};
+            const classRow = Object.entries(ac).sort((a, b) => b[1] - a[1]).map(([k, v]) => cell(k, Number(v).toFixed(0) + "%")).join("");
+            const holdRows = holds.map((h) => {
+              const g = h.gainPct;
+              return `<tr><td><b>${(h.name || "").slice(0, 38)}</b></td><td>${h.category || "—"}</td><td>${money(h.value, cur)}</td><td>${h.pct != null ? h.pct.toFixed(1) + "%" : "—"}</td><td style="color:${g == null ? "var(--muted)" : g >= 0 ? "var(--green)" : "var(--red)"}">${g == null ? "—" : (g >= 0 ? "+" : "") + g + "%"}</td></tr>`;
+            }).join("");
+            const badge = { kkr_report: "KKR Investor Portal", quarterly_report: "Quarterly report", holdings_statement: "Holdings statement" }[r.docType] || "Statement";
+            const sectHtml = (r.sections || []).map((s) => `<div style="margin-bottom:12px;"><div class="wh-title" style="margin-bottom:4px;">${s.title}</div><div style="font-size:13px;color:var(--text);line-height:1.5;">${s.body}</div></div>`).join("");
+            const warnHtml = (r.warnings || []).map((w) => `<div class="news-item" style="font-size:13px;">${w.level === "warn" ? "⚠️" : "ℹ️"} ${w.text}</div>`).join("");
+            const posHtml = (r.positives || []).map((p) => `<div class="news-item" style="font-size:13px;">✅ ${p}</div>`).join("");
+            out.innerHTML = `
+              <div class="metrics" style="margin-bottom:10px;">
+                ${cell("Total value", money(r.totalValue, cur))}
+                ${cell("Holdings", holds.length)}
+                ${cell("Format", badge)}
+                ${r.reportDate ? cell("As at", r.reportDate) : ""}
+              </div>
+              ${classRow ? `<div class="wh-title" style="margin:12px 0 6px;">Asset allocation</div><div class="metrics">${classRow}</div>` : ""}
+              <div class="wh-title" style="margin:14px 0 6px;">Holdings</div>
+              <div class="table-wrap"><table><thead><tr><th>Holding</th><th>Category</th><th>Value</th><th>Weight</th><th>Gain</th></tr></thead><tbody>${holdRows}</tbody></table></div>
+              ${warnHtml ? `<div class="wh-title" style="margin:14px 0 6px;">Watch-outs</div>${warnHtml}` : ""}
+              ${sectHtml ? `<div class="wh-title" style="margin:14px 0 8px;">Analysis</div>${sectHtml}` : ""}
+              ${posHtml ? `<div class="wh-title" style="margin:14px 0 6px;">Positives</div>${posHtml}` : ""}`;
+            saveWealthHoldings("investments", { holdings: holds, totalValue: r.totalValue, currency: cur });
+          } catch (err) { out.innerHTML = `<div class="err">${err.message}</div>`; }
+        };
+      }},
+      radar: { title: "Portfolio News Radar", cat: "My Money", w: 8, h: 11, render: async (sym, b, uid) => {
+        // Aggregates news across all uploaded pension + investment holdings.
+        if (!wealthSyncWired.has("radar-" + uid)) { wealthSyncWired.add("radar-" + uid); window.addEventListener("wealth-holdings-updated", () => { const body = document.querySelector(`[gs-id="${uid}"] .wb`); if (body) WIDGETS.radar.render(sym, body, uid); }); }
+        const store = wealthStore();
+        const merged = [...((store.pension || {}).holdings || []), ...((store.investments || {}).holdings || [])];
+        const upd = Math.max((store.pension || {}).updated || 0, (store.investments || {}).updated || 0);
+        b.innerHTML = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
+            <button class="btn refresh">↻ Scan my holdings</button>
+            <span style="font-size:11px;color:var(--muted);">${merged.length ? merged.length + " holdings from your statements" + (upd ? " · updated " + new Date(upd).toLocaleDateString() : "") : "No holdings yet — upload a pension or investment statement first."}</span>
+          </div><div class="rout"></div>`;
+        const out = b.querySelector(".rout");
+        const GROUPS = [["kkr_watch", "🎯 KKR Exit & Sale Watch"], ["performance", "📈 Performance & Companies"], ["markets", "🌍 Markets & Note Underlyings"], ["funds", "🏦 Funds & Managers"]];
+        const scan = async () => {
+          if (!merged.length) { out.innerHTML = `<div class="loading">Add the Pension or Investment analyser widget and upload a statement — your holdings save automatically and appear here.</div>`; return; }
+          out.innerHTML = `<div class="skel" style="height:100px;width:100%;"></div>`;
+          try {
+            const r = await post(`/api/wealth/holdings-news`, { holdings: merged });
+            const g = r.groups || {};
+            const pubOf = (it) => { const t = it.source && !/google news/i.test(it.source) ? it.source : (it.title || "").split(" - ").pop(); return t && t !== it.title ? t : (it.holding || ""); };
+            let html = "";
+            for (const [key, label] of GROUPS) {
+              const items = g[key] || []; if (!items.length) continue;
+              html += `<div class="wh-title" style="margin:12px 0 6px;">${label} <span style="color:var(--muted);font-weight:400;">(${items.length})</span></div>` +
+                items.slice(0, 12).map((it) => `<div class="news-item" style="font-size:13px;"><a href="${it.link || "#"}" target="_blank" rel="noopener">${it.title || ""}</a><div class="meta">${pubOf(it)}${it.date ? " · " + new Date(it.date).toLocaleDateString() : ""} · <span style="color:var(--accent);">${it.holding || ""}</span></div></div>`).join("");
+            }
+            out.innerHTML = html || `<div class="loading">No recent news found for your holdings. Try again later.</div>`;
+          } catch (e) { out.innerHTML = `<div class="err">${e.message}</div>`; }
+        };
+        b.querySelector(".refresh").onclick = scan;
+        if (merged.length) scan();
+      }},
     };
     const CATS = ["Price", "Analyst Estimates", "Asset Overview", "Comparison", "Fundamental Analysis", "Options", "My Money", "News", "Utils"];
     const DEFAULT_LAYOUT = () => ([
@@ -466,7 +612,16 @@
     function persistLayout() { const nodes = grid.save(false); const d = active(); const typeByUid = Object.fromEntries(d.layout.map((w) => [w.uid, w.type])); const cfgByUid = Object.fromEntries(d.layout.map((w) => [w.uid, w.config])); const symByUid = Object.fromEntries(d.layout.map((w) => [w.uid, w.symbol])); d.layout = nodes.map((n) => ({ uid: String(n.id), type: typeByUid[String(n.id)], x: n.x, y: n.y, w: n.w, h: n.h, config: cfgByUid[String(n.id)], symbol: symByUid[String(n.id)] })).filter((w) => w.type); save(); }
 
     // ---------- widget actions ----------
-    function addWidgetInstance(type) { const w = WIDGETS[type]; const inst = { uid: uid(), type, w: w.w, h: w.h }; const el = makeItem(inst); grid.el.appendChild(el); grid.makeWidget(el); active().layout.push(inst); fill(el, inst); }
+    // These My Money widgets are statement-driven and meant to be unique — adding
+    // one that already exists just scrolls to it rather than creating a duplicate.
+    const SINGLETON = new Set(["projector", "cgt", "portfolio", "pension_upload", "investments_upload", "radar"]);
+    function addWidgetInstance(type) {
+      if (SINGLETON.has(type)) {
+        const existing = active().layout.find((w) => w.type === type);
+        if (existing) { const el = grid.el.querySelector(`[gs-id="${existing.uid}"]`); if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); el.style.transition = "outline .3s"; el.style.outline = "2px solid var(--accent)"; setTimeout(() => el.style.outline = "", 1200); } return; }
+      }
+      const w = WIDGETS[type]; const inst = { uid: uid(), type, w: w.w, h: w.h }; const el = makeItem(inst); grid.el.appendChild(el); grid.makeWidget(el); active().layout.push(inst); fill(el, inst);
+    }
     function removeWidget(u, el) { grid.removeWidget(el); if (charts[u]) { charts[u].destroy(); delete charts[u]; } active().layout = active().layout.filter((w) => w.uid !== u); save(); }
     function setSymbol() { const v = document.getElementById("ticker").value.trim().toUpperCase(); if (!v) return; active().symbol = v; save(); renderSidebar(); renderTitle(); refreshData(); }
     function refreshData() { for (const inst of active().layout) { const el = grid.el.querySelector(`[gs-id="${inst.uid}"]`); if (el) { const lbl = el.querySelector("[data-symlabel]"); if (lbl && !inst.symbol) lbl.textContent = active().symbol; el.querySelector(".wb").innerHTML = skel; fill(el, inst); } } }

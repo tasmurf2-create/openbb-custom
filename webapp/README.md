@@ -38,14 +38,14 @@ server-side, so there's no CORS setup and the OpenBB API location stays configur
 | Branch | State | Contents |
 |---|---|---|
 | **`master`** | Stable | The OpenBB dashboard: widget grid, multiple dashboards, Company Monitor preset, market/fundamentals/options/news widgets, autocomplete, breaking-news ticker, live TV news, RSS/Iframe/YouTube/Endpoint utility widgets |
-| **`wealth-integration`** | Active (Phase 1 done) | Everything in `master` **plus** the "My Money" widgets (Retirement Projector, CGT Calculator, My Portfolio), per-widget ticker override (⚙), and skeleton loaders |
+| **`wealth-integration`** | Active (Phase 1 + 2 done) | Everything in `master` **plus** the "My Money" widgets (Retirement Projector, CGT Calculator, My Portfolio), per-widget ticker override (⚙), skeleton loaders, **and the statement analysers** (Pension + Investment/KKR upload → classified holdings, allocation, Irish-tax commentary) |
 
 - Preview the branch: you're on it when checked out; hard-refresh `http://localhost:5000`.
 - Back to stable: `git checkout master`.
 - Merge when happy: open a PR `master...wealth-integration` on GitHub.
 
 ### Roadmap
-- **Phase 2** — Statement upload & analysis: pension statement parser + **KKR portfolio PDF parser** + fund classification/benchmarking (needs `pdfplumber`).
+- ~~**Phase 2** — Statement upload & analysis: pension statement parser + **KKR portfolio PDF parser** + fund classification/benchmarking.~~ **Done** — see the "Pension Statement Analyser" and "Investment / KKR Statement Analyser" widgets. Engine lives in [`wealth.py`](wealth.py); endpoints `POST /api/pension/upload` and `POST /api/investments/upload`.
 - **Phase 3** — A default "My Wealth" dashboard; remaining UI polish (sparklines, chart depth, light mode, mobile).
 
 ---
@@ -92,7 +92,7 @@ for market widgets — pinned to its own ticker via the **⚙ gear**.
 | **Comparison** | Comparison Analysis (multi-ticker) |
 | **Fundamental Analysis** | Key Metrics · Valuation Multiples · Financial Statements · Dividend Payment |
 | **Options** | Options Chain |
-| **My Money** *(wealth-integration)* | Retirement Projector (Irish) · CGT Calculator · My Portfolio (P&L) |
+| **My Money** *(wealth-integration)* | Retirement Projector (Irish) · CGT Calculator · My Portfolio (P&L) · **Pension Statement Analyser** · **Investment / KKR Statement Analyser** |
 | **News** | News (per-ticker) |
 | **Utils** | RSS / Atom Feed (ticker-aware via `{ticker}`) · Iframe · YouTube · Custom Endpoint (JSON) · Live News (TV) |
 
@@ -125,6 +125,8 @@ autocomplete · multiple saved dashboards · one-click **Company Monitor** templ
 |---|---|
 | `POST /api/wealth/projector` | Irish retirement projector — SFT/CET, health score, risks & actions |
 | `GET /api/wealth/cgt` | Irish CGT (33%, €1,270 exemption) |
+| `POST /api/pension/upload` | Pension statement (PDF/Excel/CSV) → classified holdings, allocation, fee/SFT/peer analysis |
+| `POST /api/investments/upload` | Investment / KKR portfolio statement → holdings, P&L, Irish-tax & FX commentary |
 
 `GET /api/health` — checks the app can reach the OpenBB API.
 
